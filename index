@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exotic Creature Collector Online</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @keyframes shine {
+            0% { background-position: -200% center; }
+            100% { background-position: 200% center; }
+        }
+        .rarity-mythic {
+            background: linear-gradient(90deg, #ef4444, #f59e0b, #ef4444);
+            background-size: 200% auto;
+            animation: shine 3s linear infinite;
+        }
+        .modal-bg { background: rgba(0,0,0,0.85); }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans mb-20">
+
+    <!-- Header -->
+    <header class="sticky top-0 z-40 bg-slate-900/80 backdrop-blur-md border-b border-slate-800 p-4">
+        <div class="max-w-4xl mx-auto flex justify-between items-center">
+            <div class="flex items-center gap-2">
+                <i data-lucide="package" class="text-indigo-400"></i>
+                <h1 class="text-xl font-bold tracking-tighter">EXOTIC ONLINE</h1>
+            </div>
+            <div class="flex items-center gap-4">
+                <div class="bg-slate-800 px-3 py-1 rounded-full flex items-center gap-2 border border-slate-700">
+                    <span class="text-yellow-400 font-bold">💰 <span id="balance">0</span></span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main id="app-content" class="max-w-4xl mx-auto p-4">
+        <div id="loading-screen" class="flex flex-col items-center justify-center py-20">
+            <div class="animate-spin rounded-full h-12 w-12 border-t-2 border-indigo-500 mb-4"></div>
+            <p id="loading-text">サーバーに接続しています...</p>
+        </div>
+    </main>
+
+    <!-- Navigation -->
+    <nav id="main-nav" class="fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-800 p-2 z-50 hidden">
+        <div class="max-w-4xl mx-auto flex justify-around items-center">
+            <button onclick="switchView('gacha')" id="nav-gacha" class="flex flex-col items-center p-2 text-indigo-400">
+                <i data-lucide="refresh-cw"></i>
+                <span class="text-[10px] mt-1">召喚</span>
+            </button>
+            <button onclick="switchView('collection')" id="nav-collection" class="flex flex-col items-center p-2 text-slate-500">
+                <i data-lucide="trophy"></i>
+                <span class="text-[10px] mt-1">所持</span>
+            </button>
+            <button onclick="switchView('market')" id="nav-market" class="flex flex-col items-center p-2 text-slate-500">
+                <i data-lucide="shopping-cart"></i>
+                <span class="text-[10px] mt-1">市場</span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Notification Area -->
+    <div id="toast-container" class="fixed top-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none w-full max-w-xs flex flex-col items-center"></div>
+
+    <!-- Modals -->
+    <div id="game-modal" class="fixed inset-0 z-[60] modal-bg hidden flex items-center justify-center p-4">
+        <div id="modal-content" class="transform scale-95 transition-all duration-300 bg-slate-900 p-8 rounded-3xl border-4 border-white/10 text-center max-w-sm w-full"></div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, onSnapshot, addDoc, deleteDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'exotic-collector-v2';
+
+        const RARITIES = {
+            COMMON: { label: 'Common', color: 'bg-slate-400', chance: 0.60 },
+            RARE: { label: 'Rare', color: 'bg-blue-500', chance: 0.25 },
+            EPIC: { label: 'Epic', color: 'bg-purple-600', chance: 0.10 },
+            LEGENDARY: { label: 'Legendary', color: 'bg-orange-500', chance: 0.045 },
+            MYTHIC: { label: 'Mythic', color: 'rarity-mythic', chance: 0.005 }
+        };
+
+        const TEMPLATES = [
+            { id: 'c1', name: 'スライムポヨ', rarity: 'COMMON', icon: '💧' },
+            { id: 'c2', name: 'クサイハナ', rarity: 'COMMON', icon: '🌿' },
+            { id: 'r1', name: 'スカイフォーク', rarity: 'RARE', icon: '🦅' },
+            { id: 'e1', name: 'シャドウバトラー', rarity: 'EPIC', icon: '🧛' },
+            { id: 'l1', name: '炎のフェニックス', rarity: 'LEGENDARY', icon: '🔥' },
+            { id: 'm1', name: '創世神アルファ', rarity: 'MYTHIC', icon: '✨' },
+            { id: 'm2', name: '宇宙の観測者', rarity: 'MYTHIC', icon: '👁️' }
+        ];
+
+        let currentUser = null;
+        let userData = { coins: 0, collection: [] };
+        let marketItems = [];
+        let currentView = 'gacha';
+        let isInitialized = false;
+
+        async function init() {
+            try {
+                const userCredential = await signInAnonymously(auth);
+                currentUser = userCredential.user;
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user && !isInitialized) {
+                        currentUser = user;
+                        await setupUserData();
+                        setupMarketListener();
+                        
+                        // ギフトURLのチェック
+                        await checkGiftLink();
+
+                        isInitialized = true;
+                        document.getElementById('main-nav').classList.remove('hidden');
+                        render();
+                    }
+                });
+            } catch (err) {
+                document.getElementById('loading-text').innerText = "接続に失敗しました。";
+            }
+        }
+
+        async function setupUserData() {
+            const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
+            const snap = await getDoc(userRef);
+            if (!snap.exists()) {
+                await setDoc(userRef, { coins: 1000, collection: [], userId: currentUser.uid });
+            }
+            onSnapshot(userRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    userData = docSnap.data();
+                    document.getElementById('balance').innerText = userData.coins;
+                    if (isInitialized) render();
+                }
+            });
+        }
+
+        function setupMarketListener() {
+            const marketColl = collection(db, 'artifacts', appId, 'public', 'data', 'market');
+            onSnapshot(marketColl, (snap) => {
+                marketItems = [];
+                snap.forEach(doc => marketItems.push({ marketId: doc.id, ...doc.data() }));
+                if (isInitialized) render();
+            });
+        }
+
+        // --- ギフト機能ロジック ---
+        async function checkGiftLink() {
+            const params = new URLSearchParams(window.location.search);
+            const giftId = params.get('gift');
+            if (!giftId) return;
+
+            // URLからパラメータを消去（履歴に残さないため）
+            window.history.replaceState({}, document.title, window.location.pathname);
+
+            document.getElementById('loading-text').innerText = "ギフトを受け取っています...";
+            
+            try {
+                const giftRef = doc(db, 'artifacts', appId, 'public', 'data', 'gifts', giftId);
+                const giftSnap = await getDoc(giftRef);
+
+                if (giftSnap.exists()) {
+                    const creature = giftSnap.data();
+                    
+                    // ギフト送信者が自分自身でないかチェック（任意）
+                    if (creature.senderId === currentUser.uid) {
+                        showToast("自分のギフトは受け取れません");
+                        return;
+                    }
+
+                    // コレクションに追加
+                    const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
+                    await updateDoc(userRef, { collection: arrayUnion(creature) });
+                    
+                    // ギフトデータを削除（一度きり）
+                    await deleteDoc(giftRef);
+
+                    showModal(`
+                        <div class="text-6xl mb-4">🎁</div>
+                        <h3 class="text-xl font-bold text-white mb-2">ギフトを受け取りました！</h3>
+                        <div class="bg-indigo-900/50 p-4 rounded-2xl mb-4 border border-indigo-500/30">
+                            <div class="text-5xl mb-2">${creature.icon}</div>
+                            <div class="font-bold text-indigo-200">${creature.name}</div>
+                        </div>
+                        <button onclick="closeModal()" class="w-full bg-indigo-600 py-3 rounded-xl font-bold">やったー！</button>
+                    `, 'bg-indigo-900 border-indigo-400');
+                } else {
+                    showToast("このギフトは既に受け取られているか、無効です。");
+                }
+            } catch (e) {
+                console.error(e);
+                showToast("ギフトの受取に失敗しました。");
+            }
+        }
+
+        window.createGiftLink = async (index) => {
+            const creature = userData.collection[index];
+            if (!confirm(`${creature.name} をギフト用リンクにしますか？\n（あなたの所持一覧からは消えます）`)) return;
+
+            try {
+                const giftId = crypto.randomUUID();
+                const giftRef = doc(db, 'artifacts', appId, 'public', 'data', 'gifts', giftId);
+                const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
+
+                // 1. ギフトデータ作成
+                await setDoc(giftRef, {
+                    ...creature,
+                    senderId: currentUser.uid,
+                    createdAt: Date.now()
+                });
+
+                // 2. 所持品から削除
+                await updateDoc(userRef, { collection: arrayRemove(creature) });
+
+                // 3. リンク表示
+                const giftUrl = `${window.location.origin}${window.location.pathname}?gift=${giftId}`;
+                
+                showModal(`
+                    <div class="text-5xl mb-4">🔗</div>
+                    <h3 class="text-lg font-bold text-white mb-4">ギフトリンクを作成しました</h3>
+                    <div class="bg-black/40 p-3 rounded-lg text-[10px] break-all mb-4 text-indigo-300 font-mono select-all">
+                        ${giftUrl}
+                    </div>
+                    <p class="text-[10px] text-slate-400 mb-6">このURLを友達に送ってください。<br>一度誰かが開くとリンクは無効になります。</p>
+                    <button onclick="copyToClipboard('${giftUrl}')" class="w-full bg-white text-slate-900 py-3 rounded-xl font-bold mb-2">URLをコピー</button>
+                    <button onclick="closeModal()" class="w-full text-slate-500 text-xs py-2">閉じる</button>
+                `, 'bg-slate-900 border-slate-700');
+
+            } catch (e) {
+                showToast("ギフト作成に失敗しました");
+            }
+        };
+
+        window.copyToClipboard = (text) => {
+            const el = document.createElement('textarea');
+            el.value = text;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            showToast("コピーしました！");
+        };
+
+        // --- 基本UI ---
+        window.switchView = (view) => {
+            currentView = view;
+            ['gacha', 'collection', 'market'].forEach(v => {
+                const el = document.getElementById(`nav-${v}`);
+                el.classList.toggle('text-indigo-400', v === view);
+                el.classList.toggle('text-slate-500', v !== view);
+            });
+            render();
+        };
+
+        function render() {
+            const container = document.getElementById('app-content');
+            if (!isInitialized) return;
+
+            if (currentView === 'gacha') {
+                container.innerHTML = `
+                    <div class="flex flex-col items-center justify-center min-h-[60vh] gap-8">
+                        <div class="bg-slate-900 p-10 rounded-3xl border border-slate-800 text-center shadow-2xl w-full max-w-sm">
+                            <div class="text-7xl mb-6">🥚</div>
+                            <h2 class="text-2xl font-bold mb-4">古代の卵を召喚</h2>
+                            <p class="text-slate-400 mb-8">1回 100 コイン</p>
+                            <button onclick="pullGacha()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-black py-4 rounded-2xl shadow-lg">召喚する</button>
+                        </div>
+                    </div>
+                `;
+            } else if (currentView === 'collection') {
+                container.innerHTML = `
+                    <h2 class="text-2xl font-bold mb-6 flex items-center gap-2"><i data-lucide="trophy"></i> 所持一覧 (${userData.collection.length})</h2>
+                    <div class="grid grid-cols-2 gap-3 pb-24">
+                        ${userData.collection.map((item, idx) => `
+                            <div class="bg-slate-900 p-4 rounded-2xl border border-slate-800 text-center">
+                                <div class="text-4xl mb-2">${item.icon}</div>
+                                <div class="text-[10px] font-bold ${RARITIES[item.rarity].color} px-2 rounded-full inline-block mb-1 text-white">${item.rarity}</div>
+                                <div class="font-bold text-sm mb-3 truncate">${item.name}</div>
+                                <div class="flex flex-col gap-1">
+                                    <button onclick="listToMarket(${idx})" class="w-full bg-slate-800 hover:bg-indigo-900 text-[10px] py-2 rounded-lg font-bold">市場に出す</button>
+                                    <button onclick="createGiftLink(${idx})" class="w-full bg-indigo-900/40 hover:bg-indigo-800 text-[10px] py-2 rounded-lg font-bold text-indigo-300">🎁 ギフトにする</button>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            } else if (currentView === 'market') {
+                container.innerHTML = `
+                    <h2 class="text-2xl font-bold mb-6 flex items-center gap-2"><i data-lucide="shopping-cart"></i> 市場</h2>
+                    <div class="space-y-3 pb-24">
+                        ${marketItems.map(item => `
+                            <div class="bg-slate-900 p-4 rounded-2xl border border-slate-800 flex items-center justify-between">
+                                <div class="flex items-center gap-3">
+                                    <div class="text-4xl">${item.icon}</div>
+                                    <div><div class="font-bold text-sm">${item.name}</div></div>
+                                </div>
+                                <div class="text-right">
+                                    <div class="text-yellow-400 font-black">💰 ${item.price}</div>
+                                    ${item.sellerId === currentUser.uid ? 
+                                        `<button onclick="cancelListing('${item.marketId}')" class="text-[10px] text-red-400">取消</button>` : 
+                                        `<button onclick="buyItem('${item.marketId}')" class="bg-indigo-600 px-4 py-1 rounded-lg text-xs font-bold mt-1">購入</button>`
+                                    }
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+            lucide.createIcons();
+        }
+
+        // --- 共通アクション ---
+        window.pullGacha = async () => {
+            if (userData.coins < 100) return showToast("コイン不足！");
+            const rand = Math.random();
+            let rarity = 'COMMON';
+            let acc = 0;
+            for (const [k, v] of Object.entries(RARITIES)) {
+                acc += v.chance;
+                if (rand < acc) { rarity = k; break; }
+            }
+            const template = TEMPLATES.filter(t => t.rarity === rarity)[0];
+            const creature = { ...template, instanceId: crypto.randomUUID(), acquiredAt: Date.now() };
+            const userRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data');
+            await updateDoc(userRef, { coins: userData.coins - 100, collection: arrayUnion(creature) });
+            showModal(`
+                <div class="text-8xl mb-4">${creature.icon}</div>
+                <h3 class="text-3xl font-black mb-6 text-white">${creature.name}</h3>
+                <button onclick="closeModal()" class="w-full bg-white/20 py-3 rounded-xl font-bold">入手！</button>
+            `, RARITIES[creature.rarity].color);
+        };
+
+        window.listToMarket = async (index) => {
+            const price = parseInt(prompt("価格を入力:"));
+            if (!price || price <= 0) return;
+            const creature = userData.collection[index];
+            await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'market'), { ...creature, price, sellerId: currentUser.uid });
+            await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data'), { collection: arrayRemove(creature) });
+        };
+
+        window.buyItem = async (marketId) => {
+            const item = marketItems.find(i => i.marketId === marketId);
+            if (!item || userData.coins < item.price) return showToast("コイン不足！");
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'market', marketId));
+            await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data'), { coins: userData.coins - item.price, collection: arrayUnion({ ...item, marketId: null }) });
+            const sRef = doc(db, 'artifacts', appId, 'users', item.sellerId, 'profile', 'data');
+            const sSnap = await getDoc(sRef);
+            if (sSnap.exists()) await updateDoc(sRef, { coins: sSnap.data().coins + item.price });
+        };
+
+        window.cancelListing = async (marketId) => {
+            const item = marketItems.find(i => i.marketId === marketId);
+            await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'market', marketId));
+            await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'profile', 'data'), { collection: arrayUnion({ ...item, marketId: null }) });
+        };
+
+        function showModal(html, className) {
+            const m = document.getElementById('game-modal');
+            const c = document.getElementById('modal-content');
+            c.className = `transform scale-100 transition-all duration-300 p-8 rounded-3xl border-4 text-center max-w-sm w-full ${className}`;
+            c.innerHTML = html;
+            m.classList.remove('hidden');
+        }
+        window.closeModal = () => document.getElementById('game-modal').classList.add('hidden');
+
+        function showToast(msg) {
+            const container = document.getElementById('toast-container');
+            const t = document.createElement('div');
+            t.className = "bg-indigo-600 text-white px-6 py-3 rounded-2xl text-sm font-bold shadow-2xl mb-2 transition-all duration-300 w-full text-center";
+            t.innerText = msg;
+            container.appendChild(t);
+            setTimeout(() => { t.remove(); }, 3000);
+        }
+
+        init();
+    </script>
+</body>
+</html>
