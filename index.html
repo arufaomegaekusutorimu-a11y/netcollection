@@ -1,524 +1,252 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>POKÉ-ORIPA REALTIME</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
-        
-        body {
-            font-family: 'Noto Sans JP', sans-serif;
-            background-color: #0a0a0c;
-            color: #e2e8f0;
-            overflow-x: hidden;
-        }
+import React, { useState, useEffect, useRef } from 'react';
+import { MessageSquare, User, Shield, Sword, Heart, Send, RefreshCw, Zap } from 'lucide-react';
 
-        .glass-panel {
-            background: rgba(30, 41, 59, 0.7);
-            backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
+const App = () => {
+  // --- 初期設定と定数 ---
+  const MAX_AP = 10;
+  const AP_RECOVERY_TIME = 60000; // 1分で1回復
+  const STORAGE_KEY = 'chat_game_data';
 
-        @keyframes scan {
-            0% { transform: translateY(-100%); opacity: 0; }
-            50% { opacity: 1; }
-            100% { transform: translateY(100%); opacity: 0; }
-        }
+  // --- 状態管理 ---
+  const [player, setPlayer] = useState({
+    name: '冒険者',
+    level: 1,
+    exp: 0,
+    hp: 100,
+    maxHp: 100,
+    ap: MAX_AP,
+    lastApUpdate: Date.now()
+  });
 
-        .video-container {
-            position: relative;
-            width: 100%;
-            height: 350px;
-            background: #000;
-            overflow: hidden;
-            border-radius: 1.5rem;
-        }
+  const [messages, setMessages] = useState([]);
+  const [inputText, setInputText] = useState('');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const scrollRef = useRef(null);
 
-        .scanning-line {
-            position: absolute;
-            width: 100%;
-            height: 2px;
-            background: #60a5fa;
-            box-shadow: 0 0 15px #60a5fa;
-            animation: scan 2s linear infinite;
-        }
+  // --- 初期データの読み込み ---
+  useEffect(() => {
+    const savedData = localStorage.getItem(STORAGE_KEY);
+    if (savedData) {
+      const parsed = JSON.parse(savedData);
+      setPlayer(parsed.player);
+      setMessages(parsed.messages);
+    } else {
+      // 初回メッセージ
+      const initialMsg = {
+        id: Date.now(),
+        type: 'system',
+        user: 'システム',
+        text: 'チャットゲームの世界へようこそ！発言や行動をしてレベルを上げましょう。',
+        time: new Date().toLocaleTimeString()
+      };
+      setMessages([initialMsg]);
+    }
+  }, []);
 
-        .page-fade {
-            animation: fadeIn 0.3s ease-in-out;
-        }
+  // --- データの自動保存 ---
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ player, messages }));
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [player, messages]);
 
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+  // --- APの自然回復ロジック ---
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setPlayer(prev => {
+        if (prev.ap >= MAX_AP) return prev;
+        const now = Date.now();
+        const elapsed = now - prev.lastApUpdate;
+        if (elapsed >= AP_RECOVERY_TIME) {
+          return {
+            ...prev,
+            ap: Math.min(MAX_AP, prev.ap + 1),
+            lastApUpdate: now
+          };
         }
+        return prev;
+      });
+    }, 5000); // 5秒ごとにチェック
+    return () => clearInterval(timer);
+  }, []);
 
-        .copy-toast {
-            position: fixed;
-            top: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #10b981;
-            color: white;
-            padding: 8px 16px;
-            border-radius: 99px;
-            z-index: 200;
-            display: none;
-        }
-        
-        .error-toast {
-            position: fixed;
-            bottom: 100px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #ef4444;
-            color: white;
-            padding: 12px 24px;
-            border-radius: 12px;
-            z-index: 200;
-            display: none;
-            font-weight: bold;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
-        }
-    </style>
-</head>
-<body class="pb-24">
+  // --- アクション処理 ---
+  const addMessage = (user, text, type = 'chat') => {
+    const newMsg = {
+      id: Date.now(),
+      type,
+      user,
+      text,
+      time: new Date().toLocaleTimeString()
+    };
+    setMessages(prev => [...prev.slice(-49), newMsg]); // 直近50件を保持
+  };
 
-    <!-- 通知 -->
-    <div id="copy-toast" class="copy-toast font-bold text-sm shadow-lg">URLをコピーしました！</div>
-    <div id="error-toast" class="error-toast text-sm"></div>
+  const handleSend = (e) => {
+    e.preventDefault();
+    if (!inputText.trim()) return;
 
-    <!-- ヘッダー -->
-    <header class="sticky top-0 z-50 glass-panel border-b border-white/5 p-4">
-        <div class="max-w-md mx-auto flex justify-between items-center">
-            <div class="flex items-center gap-2">
-                <div class="bg-red-600 p-2 rounded-lg shadow-lg">
-                    <i class="fas fa-bolt text-white"></i>
-                </div>
-                <div>
-                    <h1 class="font-black text-xl italic tracking-tighter leading-none">POKÉ-ORIPA</h1>
-                    <span id="room-id-display" class="text-[8px] text-slate-400 font-mono uppercase tracking-widest">CONNECTING...</span>
-                </div>
+    if (player.ap <= 0) {
+      addMessage('システム', 'APが足りません！回復を待ちましょう。', 'system');
+      return;
+    }
+
+    addMessage(player.name, inputText);
+    
+    // 経験値獲得とAP消費
+    setPlayer(prev => {
+      const newExp = prev.exp + 5;
+      const nextLevelThreshold = prev.level * 20;
+      if (newExp >= nextLevelThreshold) {
+        addMessage('システム', `レベルアップ！ Lv.${prev.level + 1} になりました！`, 'system');
+        return {
+          ...prev,
+          level: prev.level + 1,
+          exp: 0,
+          ap: prev.ap - 1,
+          maxHp: prev.maxHp + 10,
+          hp: prev.maxHp + 10
+        };
+      }
+      return { ...prev, exp: newExp, ap: prev.ap - 1 };
+    });
+
+    setInputText('');
+  };
+
+  const handleExplore = () => {
+    if (player.ap < 2) {
+      addMessage('システム', '探索にはAPが2必要です。', 'system');
+      return;
+    }
+
+    setIsRefreshing(true);
+    setTimeout(() => {
+      const results = [
+        "薬草を見つけた！HPが少し回復した。",
+        "モンスターに遭遇したが、うまく逃げ切った。",
+        "古い金貨を拾った！",
+        "何も見つからなかった..."
+      ];
+      const result = results[Math.floor(Math.random() * results.length)];
+      addMessage(player.name, `【探索】 ${result}`, 'action');
+      
+      setPlayer(prev => ({
+        ...prev,
+        ap: prev.ap - 2,
+        exp: prev.exp + 10
+      }));
+      setIsRefreshing(false);
+    }, 800);
+  };
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-900 text-slate-100 font-sans">
+      {/* ヘッダー: ステータス */}
+      <header className="bg-slate-800 p-4 border-b border-slate-700 shadow-lg">
+        <div className="max-w-4xl mx-auto flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <div className="bg-indigo-600 p-2 rounded-full">
+              <User size={24} />
             </div>
-            <div class="flex items-center bg-black/40 px-3 py-1.5 rounded-full border border-yellow-500/30">
-                <i class="fas fa-coins text-yellow-400 mr-2"></i>
-                <span id="point-display" class="font-mono font-bold text-yellow-400">---</span>
+            <div>
+              <h1 className="font-bold text-lg">{player.name} <span className="text-sm font-normal text-slate-400">Lv.{player.level}</span></h1>
+              <div className="w-32 h-2 bg-slate-700 rounded-full mt-1 overflow-hidden">
+                <div 
+                  className="h-full bg-yellow-500 transition-all duration-500" 
+                  style={{ width: `${(player.exp / (player.level * 20)) * 100}%` }}
+                />
+              </div>
             </div>
+          </div>
+          
+          <div className="flex gap-6 text-sm">
+            <div className="flex flex-col items-center">
+              <div className="flex items-center gap-1 text-red-400">
+                <Heart size={16} /> <span>{player.hp}/{player.maxHp}</span>
+              </div>
+              <span className="text-[10px] uppercase text-slate-500">Health</span>
+            </div>
+            <div className="flex flex-col items-center">
+              <div className="flex items-center gap-1 text-cyan-400">
+                <Zap size={16} /> <span>{player.ap}/{MAX_AP}</span>
+              </div>
+              <span className="text-[10px] uppercase text-slate-500">Stamina</span>
+            </div>
+          </div>
         </div>
-    </header>
+      </header>
 
-    <main id="main-content" class="max-w-md mx-auto p-4 space-y-6">
-        <div class="text-center py-20">
-            <i class="fas fa-circle-notch fa-spin text-3xl text-red-500 mb-4"></i>
-            <p>サーバーに接続中...</p>
+      {/* メイン: チャットエリア */}
+      <main className="flex-1 overflow-hidden max-w-4xl mx-auto w-full flex flex-col p-4">
+        <div 
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-slate-700"
+        >
+          {messages.map((msg) => (
+            <div 
+              key={msg.id} 
+              className={`p-3 rounded-lg max-w-[90%] animate-in fade-in slide-in-from-bottom-2 duration-300 ${
+                msg.type === 'system' ? 'bg-slate-800 border border-slate-700 mx-auto text-center text-sm text-indigo-300' :
+                msg.type === 'action' ? 'bg-emerald-900/30 border border-emerald-800/50 text-emerald-100 italic' :
+                'bg-slate-800 border border-slate-700'
+              }`}
+            >
+              <div className="flex justify-between items-baseline mb-1">
+                <span className={`font-bold text-xs ${msg.type === 'system' ? 'text-indigo-400' : 'text-slate-400'}`}>
+                  {msg.user}
+                </span>
+                <span className="text-[10px] text-slate-500">{msg.time}</span>
+              </div>
+              <p className="text-sm leading-relaxed">{msg.text}</p>
+            </div>
+          ))}
         </div>
-    </main>
+      </main>
 
-    <!-- ガチャ演出オーバーレイ -->
-    <div id="gacha-overlay" class="fixed inset-0 z-[100] hidden flex items-center justify-center bg-black">
-        <div class="w-full max-w-md p-6 text-center">
-            <div class="video-container flex items-center justify-center relative bg-slate-900 border-4 border-slate-800">
-                <div id="video-bg" class="absolute inset-0 bg-gradient-to-b from-blue-900/20 to-black"></div>
-                <div class="scanning-line"></div>
-                <div id="pack-visual" class="relative z-10 transition-all duration-1000">
-                    <div class="w-32 h-48 bg-gradient-to-br from-red-500 to-blue-600 rounded-lg shadow-2xl flex items-center justify-center border-2 border-white/20">
-                        <i class="fas fa-question text-4xl text-white animate-pulse"></i>
-                    </div>
-                </div>
-            </div>
-            <h2 id="gacha-status" class="mt-8 text-xl font-bold tracking-widest text-blue-400 animate-pulse uppercase">
-                Synchronizing...
-            </h2>
-        </div>
-    </div>
-
-    <!-- 結果表示モーダル -->
-    <div id="result-modal" class="fixed inset-0 z-[110] hidden flex items-center justify-center p-6 bg-black/95 backdrop-blur-md">
-        <div class="w-full max-w-sm glass-panel rounded-[2.5rem] p-8 border border-white/10 shadow-2xl scale-90 opacity-0 transition-all duration-500" id="modal-body">
-            <div class="text-center mb-6">
-                <span class="text-yellow-500 text-xs font-black tracking-widest uppercase">Target Captured!</span>
-                <h3 id="result-name" class="text-2xl font-black mt-1">ポケモン名</h3>
-            </div>
-            <div id="result-card-container" class="relative group mx-auto mb-8 text-center">
-                <div id="result-card-bg" class="aspect-square w-56 mx-auto rounded-full flex items-center justify-center relative overflow-hidden shadow-2xl border-4 border-white/10">
-                    <img id="result-img" src="" alt="" class="w-40 h-40 object-contain z-10 drop-shadow-[0_0_15px_rgba(255,255,255,0.5)]">
-                </div>
-                <div id="result-rarity" class="absolute -bottom-2 left-1/2 -translate-x-1/2 bg-white text-slate-900 font-black px-6 py-1 rounded-full text-sm shadow-xl">
-                    RANK
-                </div>
-            </div>
-            <div class="grid grid-cols-2 gap-4">
-                <button onclick="handleRecycle()" class="flex flex-col items-center gap-1 bg-slate-800/80 border border-slate-700 py-4 rounded-2xl hover:bg-slate-700 transition-colors">
-                    <i class="fas fa-undo text-yellow-400"></i>
-                    <span class="text-[10px] font-bold text-slate-400">ポイント還元</span>
-                    <span id="recycle-value" class="text-yellow-400 font-mono text-xs">---</span>
-                </button>
-                <button onclick="handleKeep()" class="flex flex-col items-center gap-1 bg-gradient-to-br from-red-600 to-orange-600 py-4 rounded-2xl hover:brightness-110 shadow-lg shadow-red-900/40">
-                    <i class="fas fa-box-open text-white"></i>
-                    <span class="text-[10px] font-bold text-white">手持ちに加える</span>
-                    <span class="text-red-100 text-[10px]">コレクションへ</span>
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- ナビゲーション -->
-    <nav class="fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur-lg border-t border-slate-800 p-2 z-50">
-        <div class="max-w-md mx-auto flex justify-around">
-            <button onclick="switchPage('home')" id="nav-home" class="flex flex-col items-center p-2 gap-1 text-red-500">
-                <i class="fas fa-gamepad text-xl"></i>
-                <span class="text-[10px] font-bold">ガチャ</span>
+      {/* フッター: 操作パネル */}
+      <footer className="bg-slate-800 p-4 border-t border-slate-700">
+        <div className="max-w-4xl mx-auto">
+          <div className="flex gap-2 mb-4">
+            <button 
+              onClick={handleExplore}
+              disabled={isRefreshing || player.ap < 2}
+              className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 py-2 rounded-md font-bold transition-colors shadow-sm"
+            >
+              {isRefreshing ? <RefreshCw className="animate-spin" size={18} /> : <Sword size={18} />}
+              探索する (AP:2)
             </button>
-            <button onclick="switchPage('collection')" id="nav-collection" class="flex flex-col items-center p-2 gap-1 text-slate-500">
-                <i class="fas fa-book text-xl"></i>
-                <span class="text-[10px] font-bold">図鑑</span>
+            <button 
+              className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-md transition-colors"
+              onClick={() => addMessage('システム', 'ここは安全なキャンプです。', 'system')}
+            >
+              <Shield size={18} />
             </button>
+          </div>
+
+          <form onSubmit={handleSend} className="flex gap-2">
+            <input
+              type="text"
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              placeholder="メッセージを入力..."
+              className="flex-1 bg-slate-900 border border-slate-700 rounded-md px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+            />
+            <button 
+              type="submit"
+              className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-md transition-colors shadow-sm flex items-center justify-center"
+            >
+              <Send size={18} />
+            </button>
+          </form>
+          <p className="text-[10px] text-slate-500 mt-2 text-center">
+            ※スタミナは1分ごとに回復します。発言すると経験値が溜まります。
+          </p>
         </div>
-    </nav>
+      </footer>
+    </div>
+  );
+};
 
-    <!-- Firebase SDK -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-
-        // --- URLパラメータからルームIDを取得 ---
-        const urlParams = new URLSearchParams(window.location.search);
-        const roomId = urlParams.get('room') || 'global_room';
-
-        // --- Firebase 設定 ---
-        const firebaseConfig = JSON.parse(__firebase_config);
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        const auth = getAuth(app);
-        
-        // アプリIDの定義
-        const baseAppId = typeof __app_id !== 'undefined' ? __app_id : 'pokemon_oripa_v2';
-        const appId = baseAppId; // パスを固定して権限エラーを抑制
-
-        // --- ゲーム定数 ---
-        const GACHA_COST = 500;
-        const INITIAL_STOCK = 100;
-        const GEN_1_LIMIT = 151;
-
-        const RARITIES = {
-            S: { label: 'S RANK', color: 'from-amber-400 to-red-600', recycle: 2500, range: [1, GEN_1_LIMIT] },
-            A: { label: 'A RANK', color: 'from-purple-500 to-indigo-600', recycle: 800, range: [1, GEN_1_LIMIT] },
-            B: { label: 'B RANK', color: 'from-blue-400 to-blue-600', recycle: 200, range: [1, GEN_1_LIMIT] },
-            C: { label: 'C RANK', color: 'from-slate-400 to-slate-500', recycle: 50, range: [1, GEN_1_LIMIT] }
-        };
-
-        // --- ローカル状態 ---
-        let user = null;
-        let userData = { points: 10000, collection: [] };
-        let globalStock = INITIAL_STOCK;
-        let currentPage = 'home';
-        let currentCard = null;
-        let isGachaProcessing = false;
-
-        // --- パスヘルパー (厳格なRULE 1遵守) ---
-        // パブリックデータへのアクセスに制限がある場合を考慮し、ルームIDをサブパスに含める
-        const getStockDoc = () => doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-        const getUserDoc = (uid) => doc(db, 'artifacts', appId, 'users', uid, 'profile', 'main');
-
-        // --- 通知表示 ---
-        function showError(msg) {
-            console.error(msg);
-            const toast = document.getElementById('error-toast');
-            if (toast) {
-                toast.innerText = msg;
-                toast.style.display = 'block';
-                setTimeout(() => toast.style.display = 'none', 4000);
-            }
-        }
-
-        // --- リンク共有機能 ---
-        window.copyShareLink = () => {
-            const currentShareUrl = window.location.origin + window.location.pathname + "?room=" + roomId;
-            const el = document.createElement('textarea');
-            el.value = currentShareUrl;
-            document.body.appendChild(el);
-            el.select();
-            document.execCommand('copy');
-            document.body.removeChild(el);
-
-            const toast = document.getElementById('copy-toast');
-            toast.style.display = 'block';
-            setTimeout(() => toast.style.display = 'none', 2000);
-        };
-
-        // --- 初期化フロー ---
-        async function init() {
-            document.getElementById('room-id-display').innerText = `ROOM: ${roomId.toUpperCase()}`;
-            try {
-                // RULE 3: Auth First
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-                
-                onAuthStateChanged(auth, (u) => {
-                    if (u) {
-                        user = u;
-                        setupRealtimeListeners();
-                    }
-                });
-            } catch (err) {
-                showError("認証に失敗しました。ページを更新してください。");
-            }
-        }
-
-        async function setupRealtimeListeners() {
-            if (!user) return;
-
-            // 1. 在庫リスナー
-            const stockRef = getStockDoc();
-            
-            // 初期化試行（失敗しても続行）
-            try {
-                const snap = await getDoc(stockRef);
-                if (!snap.exists()) {
-                    await setDoc(stockRef, { remaining: INITIAL_STOCK });
-                }
-            } catch (e) {
-                console.warn("Public stock access restricted. Using local sync.");
-            }
-
-            onSnapshot(stockRef, (snapshot) => {
-                if (snapshot.exists()) {
-                    globalStock = snapshot.data().remaining;
-                    renderPage();
-                }
-            }, (err) => {
-                // 読み取りエラー時はローカルの規定値を表示
-                console.error("Stock sync error", err);
-                renderPage(); 
-            });
-
-            // 2. ユーザーデータリスナー
-            const userRef = getUserDoc(user.uid);
-            
-            try {
-                const uSnap = await getDoc(userRef);
-                if (!uSnap.exists()) {
-                    await setDoc(userRef, userData);
-                }
-            } catch (e) {
-                showError("データの初期化に失敗しました");
-            }
-
-            onSnapshot(userRef, (snapshot) => {
-                if (snapshot.exists()) {
-                    userData = snapshot.data();
-                    updateUI();
-                    renderPage();
-                }
-            }, (err) => showError("ユーザーデータの同期が途切れました"));
-        }
-
-        function updateUI() {
-            const el = document.getElementById('point-display');
-            if (el) el.innerText = (userData.points || 0).toLocaleString();
-        }
-
-        window.startGacha = async () => {
-            if (!user || isGachaProcessing) return;
-            
-            if (userData.points < GACHA_COST) {
-                showError("ポイントが不足しています");
-                return;
-            }
-
-            isGachaProcessing = true;
-            const overlay = document.getElementById('gacha-overlay');
-            overlay.classList.remove('hidden');
-
-            try {
-                // 1. 在庫チェック & 更新
-                const stockRef = getStockDoc();
-                const profileRef = getUserDoc(user.uid);
-
-                // 2. 抽選
-                const rarityKey = getRandRarityKey();
-                const r = RARITIES[rarityKey];
-                const pokeId = Math.floor(Math.random() * (r.range[1] - r.range[0] + 1)) + r.range[0];
-                
-                const response = await fetch(`https://pokeapi.co/api/v2/pokemon/${pokeId}`);
-                if (!response.ok) throw new Error("API Connection Failed");
-                const data = await response.json();
-                
-                const img = data.sprites.other['official-artwork']?.front_default || data.sprites.front_default;
-
-                currentCard = {
-                    id: data.id,
-                    name: data.name.toUpperCase(),
-                    img: img,
-                    rarity: rarityKey,
-                    timestamp: Date.now()
-                };
-
-                // Firestore 更新 (順序: 在庫 -> ポイント)
-                // 在庫更新が権限エラーで失敗する場合でもガチャ結果は表示できるように try-catch
-                try {
-                    await updateDoc(stockRef, { remaining: increment(-1) });
-                } catch (e) {
-                    console.warn("Stock update skipped due to permissions");
-                }
-                
-                await updateDoc(profileRef, { points: increment(-GACHA_COST) });
-
-                setTimeout(() => {
-                    overlay.classList.add('hidden');
-                    showResultModal();
-                    isGachaProcessing = false;
-                }, 2000);
-
-            } catch (err) {
-                overlay.classList.add('hidden');
-                showError("サーバーエラーが発生しました。");
-                isGachaProcessing = false;
-            }
-        };
-
-        function getRandRarityKey() {
-            const n = Math.random() * 100;
-            if (n < 3) return 'S';
-            if (n < 15) return 'A';
-            if (n < 45) return 'B';
-            return 'C';
-        }
-
-        function showResultModal() {
-            const modal = document.getElementById('result-modal');
-            const body = document.getElementById('modal-body');
-            const r = RARITIES[currentCard.rarity];
-
-            document.getElementById('result-name').innerText = currentCard.name;
-            document.getElementById('result-img').src = currentCard.img;
-            document.getElementById('result-rarity').innerText = r.label;
-            document.getElementById('result-card-bg').className = `aspect-square w-52 mx-auto rounded-full flex items-center justify-center relative overflow-hidden shadow-2xl border-4 border-white/10 bg-gradient-to-br ${r.color}`;
-            document.getElementById('recycle-value').innerText = `${r.recycle} PT`;
-
-            modal.classList.remove('hidden');
-            setTimeout(() => body.classList.remove('scale-90', 'opacity-0'), 10);
-        }
-
-        window.handleRecycle = async () => {
-            if (!user || !currentCard) return;
-            try {
-                const r = RARITIES[currentCard.rarity];
-                const profileRef = getUserDoc(user.uid);
-                await updateDoc(profileRef, { points: increment(r.recycle) });
-                closeModal();
-            } catch (e) {
-                showError("還元の保存に失敗しました");
-            }
-        };
-
-        window.handleKeep = async () => {
-            if (!user || !currentCard) return;
-            try {
-                const profileRef = getUserDoc(user.uid);
-                const currentCollection = userData.collection || [];
-                await updateDoc(profileRef, { collection: [currentCard, ...currentCollection] });
-                closeModal();
-            } catch (e) {
-                showError("保存に失敗しました");
-            }
-        };
-
-        function closeModal() {
-            const modal = document.getElementById('result-modal');
-            document.getElementById('modal-body').classList.add('scale-90', 'opacity-0');
-            setTimeout(() => modal.classList.add('hidden'), 300);
-        }
-
-        window.switchPage = (p) => {
-            currentPage = p;
-            renderPage();
-        };
-
-        function renderPage() {
-            const main = document.getElementById('main-content');
-            if (!user) return;
-
-            const hActive = currentPage === 'home';
-            document.getElementById('nav-home').className = `flex flex-col items-center p-2 gap-1 ${hActive ? 'text-red-500' : 'text-slate-500'}`;
-            document.getElementById('nav-collection').className = `flex flex-col items-center p-2 gap-1 ${!hActive ? 'text-blue-500' : 'text-slate-500'}`;
-
-            if (currentPage === 'home') {
-                main.innerHTML = `
-                    <div class="page-fade space-y-6">
-                        <div class="relative h-44 rounded-3xl overflow-hidden bg-gradient-to-br from-red-600 to-indigo-800 p-6 flex flex-col justify-end border border-white/10 shadow-2xl">
-                            <div class="absolute top-4 right-4 bg-white/10 backdrop-blur px-3 py-1 rounded-full text-[10px] font-bold">LIVE SYNC</div>
-                            <h2 class="text-3xl font-black italic text-white tracking-tighter leading-8">GEN 1<br>PREMIUM PACK</h2>
-                            <p class="text-[10px] text-white/70 font-mono">${roomId.toUpperCase()}</p>
-                        </div>
-
-                        <div class="glass-panel rounded-[2rem] p-6 border border-white/10 shadow-xl">
-                            <div class="flex justify-between items-center mb-4">
-                                <h3 class="font-bold flex items-center gap-2">
-                                    <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                                    在庫ステータス
-                                </h3>
-                                <div class="text-right">
-                                    <p class="text-[10px] text-slate-400 font-bold uppercase">Stock</p>
-                                    <p class="text-xl font-black text-yellow-400 font-mono">${globalStock} / ${INITIAL_STOCK}</p>
-                                </div>
-                            </div>
-
-                            <div class="h-2 w-full bg-black/40 rounded-full overflow-hidden mb-8">
-                                <div class="h-full bg-gradient-to-r from-yellow-600 to-yellow-300 transition-all duration-1000" style="width: ${(globalStock/INITIAL_STOCK)*100}%"></div>
-                            </div>
-
-                            <div class="video-container flex items-center justify-center bg-slate-900/50 mb-8 cursor-pointer group shadow-inner" onclick="startGacha()">
-                                <div class="scanning-line"></div>
-                                <div class="relative w-24 h-36 bg-gradient-to-br from-red-600 to-blue-700 rounded-lg border-2 border-white/20 flex items-center justify-center group-hover:scale-105 transition-all shadow-2xl overflow-hidden">
-                                     <div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-20"></div>
-                                     <i class="fas fa-bolt text-white text-2xl animate-pulse"></i>
-                                </div>
-                            </div>
-
-                            <button onclick="startGacha()" class="w-full bg-gradient-to-r from-red-600 to-red-500 py-5 rounded-2xl font-black text-xl shadow-lg hover:brightness-110 active:scale-95 transition-all mb-4">
-                                ${GACHA_COST.toLocaleString()} PT で引く
-                            </button>
-
-                            <button onclick="copyShareLink()" class="w-full bg-slate-800/50 hover:bg-slate-800 py-3 rounded-xl font-bold text-[10px] text-slate-400 flex items-center justify-center gap-2 transition-colors border border-white/5">
-                                <i class="fas fa-link"></i> ルームURLをコピーして招待
-                            </button>
-                        </div>
-                    </div>
-                `;
-            } else {
-                const items = userData.collection || [];
-                main.innerHTML = `
-                    <div class="page-fade space-y-4">
-                        <div class="flex justify-between items-center mb-2">
-                            <h2 class="text-xl font-bold flex items-center gap-2"><i class="fas fa-book text-blue-400"></i> 図鑑コレクション (${items.length})</h2>
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            ${items.length === 0 ? '<p class="col-span-2 text-center py-20 text-slate-500 text-sm">手持ちのポケモンがいません</p>' : 
-                                items.map(item => `
-                                <div class="glass-panel rounded-2xl p-3 border border-white/5 flex flex-col items-center">
-                                    <div class="w-full aspect-square rounded-xl bg-gradient-to-br ${RARITIES[item.rarity].color} flex items-center justify-center overflow-hidden shadow-inner">
-                                        <img src="${item.img}" class="w-20 h-20 object-contain drop-shadow-2xl">
-                                    </div>
-                                    <div class="w-full mt-2 text-center">
-                                        <p class="text-[10px] font-black text-white/90 truncate">${item.name}</p>
-                                        <p class="text-[8px] font-bold text-white/50">${RARITIES[item.rarity].label}</p>
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            }
-        }
-
-        init();
-    </script>
-</body>
-</html>
+export default App;
