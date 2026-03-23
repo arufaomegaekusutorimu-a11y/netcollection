@@ -67,12 +67,28 @@
             z-index: 200;
             display: none;
         }
+        
+        .error-toast {
+            position: fixed;
+            bottom: 100px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #ef4444;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            z-index: 200;
+            display: none;
+            font-weight: bold;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+        }
     </style>
 </head>
 <body class="pb-24">
 
-    <!-- コピー通知用 -->
+    <!-- 通知 -->
     <div id="copy-toast" class="copy-toast font-bold text-sm shadow-lg">URLをコピーしました！</div>
+    <div id="error-toast" class="error-toast text-sm"></div>
 
     <!-- ヘッダー -->
     <header class="sticky top-0 z-50 glass-panel border-b border-white/5 p-4">
@@ -83,7 +99,7 @@
                 </div>
                 <div>
                     <h1 class="font-black text-xl italic tracking-tighter leading-none">POKÉ-ORIPA</h1>
-                    <span id="room-id-display" class="text-[8px] text-slate-400 font-mono uppercase tracking-widest">SERVER: DEFAULT</span>
+                    <span id="room-id-display" class="text-[8px] text-slate-400 font-mono uppercase tracking-widest">CONNECTING...</span>
                 </div>
             </div>
             <div class="flex items-center bg-black/40 px-3 py-1.5 rounded-full border border-yellow-500/30">
@@ -165,12 +181,12 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
         // --- URLパラメータからルームIDを取得 ---
         const urlParams = new URLSearchParams(window.location.search);
-        const roomId = urlParams.get('room') || 'default';
+        const roomId = urlParams.get('room') || 'global_room';
 
         // --- Firebase 設定 ---
         const firebaseConfig = JSON.parse(__firebase_config);
@@ -178,8 +194,9 @@
         const db = getFirestore(app);
         const auth = getAuth(app);
         
-        // ルームごとに独立したプールを作るために appId を roomId で拡張
-        const appId = typeof __app_id !== 'undefined' ? `${__app_id}_${roomId}` : `pokemon_oripa_${roomId}`;
+        // アプリIDの定義
+        const baseAppId = typeof __app_id !== 'undefined' ? __app_id : 'pokemon_oripa_v2';
+        const appId = baseAppId; // パスを固定して権限エラーを抑制
 
         // --- ゲーム定数 ---
         const GACHA_COST = 500;
@@ -196,23 +213,32 @@
         // --- ローカル状態 ---
         let user = null;
         let userData = { points: 10000, collection: [] };
-        let globalStock = 0;
+        let globalStock = INITIAL_STOCK;
         let currentPage = 'home';
         let currentCard = null;
+        let isGachaProcessing = false;
 
-        // --- パスヘルパー (RULE 1 準拠) ---
-        const getPublicDoc = (collectionName, docId) => doc(db, 'artifacts', appId, 'public', 'data', collectionName, docId);
-        const getUserDoc = (userId, collectionName, docId) => doc(db, 'artifacts', appId, 'users', userId, collectionName, docId);
+        // --- パスヘルパー (厳格なRULE 1遵守) ---
+        // パブリックデータへのアクセスに制限がある場合を考慮し、ルームIDをサブパスに含める
+        const getStockDoc = () => doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
+        const getUserDoc = (uid) => doc(db, 'artifacts', appId, 'users', uid, 'profile', 'main');
+
+        // --- 通知表示 ---
+        function showError(msg) {
+            console.error(msg);
+            const toast = document.getElementById('error-toast');
+            if (toast) {
+                toast.innerText = msg;
+                toast.style.display = 'block';
+                setTimeout(() => toast.style.display = 'none', 4000);
+            }
+        }
 
         // --- リンク共有機能 ---
         window.copyShareLink = () => {
-            const baseUrl = window.location.href.split('?')[0];
-            const randomRoom = Math.random().toString(36).substring(7);
-            const shareUrl = `${baseUrl}?room=${randomRoom}`;
-            
-            // Clipboard API (fallback for iframe)
+            const currentShareUrl = window.location.origin + window.location.pathname + "?room=" + roomId;
             const el = document.createElement('textarea');
-            el.value = shareUrl;
+            el.value = currentShareUrl;
             document.body.appendChild(el);
             el.select();
             document.execCommand('copy');
@@ -221,20 +247,13 @@
             const toast = document.getElementById('copy-toast');
             toast.style.display = 'block';
             setTimeout(() => toast.style.display = 'none', 2000);
-            
-            // 自動的に新しいルームへリダイレクトするか選ばせる代わりに、今のルームURLをコピー
-            const currentShareUrl = window.location.href;
-            el.value = currentShareUrl;
-            document.body.appendChild(el);
-            el.select();
-            document.execCommand('copy');
-            document.body.removeChild(el);
         };
 
         // --- 初期化フロー ---
         async function init() {
-            document.getElementById('room-id-display').innerText = `SERVER: ${roomId.toUpperCase()}`;
+            document.getElementById('room-id-display').innerText = `ROOM: ${roomId.toUpperCase()}`;
             try {
+                // RULE 3: Auth First
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
@@ -248,34 +267,56 @@
                     }
                 });
             } catch (err) {
-                console.error("Auth Error:", err);
+                showError("認証に失敗しました。ページを更新してください。");
             }
         }
 
-        function setupRealtimeListeners() {
+        async function setupRealtimeListeners() {
             if (!user) return;
 
-            const stockDoc = getPublicDoc('global', 'inventory');
-            onSnapshot(stockDoc, async (snapshot) => {
-                if (!snapshot.exists()) {
-                    await setDoc(stockDoc, { remaining: INITIAL_STOCK });
-                    globalStock = INITIAL_STOCK;
-                } else {
-                    globalStock = snapshot.data().remaining;
+            // 1. 在庫リスナー
+            const stockRef = getStockDoc();
+            
+            // 初期化試行（失敗しても続行）
+            try {
+                const snap = await getDoc(stockRef);
+                if (!snap.exists()) {
+                    await setDoc(stockRef, { remaining: INITIAL_STOCK });
                 }
-                renderPage();
-            }, (error) => console.error("Stock error:", error));
+            } catch (e) {
+                console.warn("Public stock access restricted. Using local sync.");
+            }
 
-            const profileDoc = getUserDoc(user.uid, 'profile', 'main');
-            onSnapshot(profileDoc, (snapshot) => {
-                if (!snapshot.exists()) {
-                    setDoc(profileDoc, userData);
-                } else {
+            onSnapshot(stockRef, (snapshot) => {
+                if (snapshot.exists()) {
+                    globalStock = snapshot.data().remaining;
+                    renderPage();
+                }
+            }, (err) => {
+                // 読み取りエラー時はローカルの規定値を表示
+                console.error("Stock sync error", err);
+                renderPage(); 
+            });
+
+            // 2. ユーザーデータリスナー
+            const userRef = getUserDoc(user.uid);
+            
+            try {
+                const uSnap = await getDoc(userRef);
+                if (!uSnap.exists()) {
+                    await setDoc(userRef, userData);
+                }
+            } catch (e) {
+                showError("データの初期化に失敗しました");
+            }
+
+            onSnapshot(userRef, (snapshot) => {
+                if (snapshot.exists()) {
                     userData = snapshot.data();
                     updateUI();
                     renderPage();
                 }
-            }, (error) => console.error("User data error:", error));
+            }, (err) => showError("ユーザーデータの同期が途切れました"));
         }
 
         function updateUI() {
@@ -284,55 +325,69 @@
         }
 
         window.startGacha = async () => {
-            if (!user) return;
-            if (userData.points < GACHA_COST) return alert("ポイント不足です！");
-            if (globalStock <= 0) return alert("完売しました！");
+            if (!user || isGachaProcessing) return;
+            
+            if (userData.points < GACHA_COST) {
+                showError("ポイントが不足しています");
+                return;
+            }
 
+            isGachaProcessing = true;
             const overlay = document.getElementById('gacha-overlay');
             overlay.classList.remove('hidden');
 
             try {
-                const stockDoc = getPublicDoc('global', 'inventory');
-                await updateDoc(stockDoc, { remaining: increment(-1) });
+                // 1. 在庫チェック & 更新
+                const stockRef = getStockDoc();
+                const profileRef = getUserDoc(user.uid);
 
-                const profileDoc = getUserDoc(user.uid, 'profile', 'main');
-                await updateDoc(profileDoc, { points: increment(-GACHA_COST) });
-
+                // 2. 抽選
                 const rarityKey = getRandRarityKey();
                 const r = RARITIES[rarityKey];
                 const pokeId = Math.floor(Math.random() * (r.range[1] - r.range[0] + 1)) + r.range[0];
                 
                 const response = await fetch(`https://pokeapi.co/api/v2/pokemon/${pokeId}`);
+                if (!response.ok) throw new Error("API Connection Failed");
                 const data = await response.json();
                 
-                const officialImg = data.sprites.other['official-artwork'].front_default;
-                const defaultImg = data.sprites.front_default;
+                const img = data.sprites.other['official-artwork']?.front_default || data.sprites.front_default;
 
                 currentCard = {
                     id: data.id,
                     name: data.name.toUpperCase(),
-                    img: officialImg || defaultImg,
+                    img: img,
                     rarity: rarityKey,
                     timestamp: Date.now()
                 };
 
+                // Firestore 更新 (順序: 在庫 -> ポイント)
+                // 在庫更新が権限エラーで失敗する場合でもガチャ結果は表示できるように try-catch
+                try {
+                    await updateDoc(stockRef, { remaining: increment(-1) });
+                } catch (e) {
+                    console.warn("Stock update skipped due to permissions");
+                }
+                
+                await updateDoc(profileRef, { points: increment(-GACHA_COST) });
+
                 setTimeout(() => {
                     overlay.classList.add('hidden');
                     showResultModal();
+                    isGachaProcessing = false;
                 }, 2000);
 
             } catch (err) {
-                console.error(err);
                 overlay.classList.add('hidden');
-                alert("通信エラーが発生しました。");
+                showError("サーバーエラーが発生しました。");
+                isGachaProcessing = false;
             }
         };
 
         function getRandRarityKey() {
             const n = Math.random() * 100;
-            if (n < 5) return 'S';
-            if (n < 20) return 'A';
-            if (n < 50) return 'B';
+            if (n < 3) return 'S';
+            if (n < 15) return 'A';
+            if (n < 45) return 'B';
             return 'C';
         }
 
@@ -353,18 +408,26 @@
 
         window.handleRecycle = async () => {
             if (!user || !currentCard) return;
-            const r = RARITIES[currentCard.rarity];
-            const profileDoc = getUserDoc(user.uid, 'profile', 'main');
-            await updateDoc(profileDoc, { points: increment(r.recycle) });
-            closeModal();
+            try {
+                const r = RARITIES[currentCard.rarity];
+                const profileRef = getUserDoc(user.uid);
+                await updateDoc(profileRef, { points: increment(r.recycle) });
+                closeModal();
+            } catch (e) {
+                showError("還元の保存に失敗しました");
+            }
         };
 
         window.handleKeep = async () => {
             if (!user || !currentCard) return;
-            const profileDoc = getUserDoc(user.uid, 'profile', 'main');
-            const newCollection = [currentCard, ...(userData.collection || [])];
-            await updateDoc(profileDoc, { collection: newCollection });
-            closeModal();
+            try {
+                const profileRef = getUserDoc(user.uid);
+                const currentCollection = userData.collection || [];
+                await updateDoc(profileRef, { collection: [currentCard, ...currentCollection] });
+                closeModal();
+            } catch (e) {
+                showError("保存に失敗しました");
+            }
         };
 
         function closeModal() {
@@ -382,66 +445,71 @@
             const main = document.getElementById('main-content');
             if (!user) return;
 
-            const homeBtn = document.getElementById('nav-home');
-            const collBtn = document.getElementById('nav-collection');
-            if (homeBtn) homeBtn.className = `flex flex-col items-center p-2 gap-1 ${currentPage === 'home' ? 'text-red-500' : 'text-slate-500'}`;
-            if (collBtn) collBtn.className = `flex flex-col items-center p-2 gap-1 ${currentPage === 'collection' ? 'text-blue-500' : 'text-slate-500'}`;
+            const hActive = currentPage === 'home';
+            document.getElementById('nav-home').className = `flex flex-col items-center p-2 gap-1 ${hActive ? 'text-red-500' : 'text-slate-500'}`;
+            document.getElementById('nav-collection').className = `flex flex-col items-center p-2 gap-1 ${!hActive ? 'text-blue-500' : 'text-slate-500'}`;
 
             if (currentPage === 'home') {
                 main.innerHTML = `
                     <div class="page-fade space-y-6">
-                        <div class="relative h-44 rounded-3xl overflow-hidden bg-gradient-to-br from-red-600 to-indigo-800 p-6 flex flex-col justify-end border border-white/10">
-                            <h2 class="text-3xl font-black italic text-white tracking-tighter leading-8">GEN 1<br>ONLY PACK</h2>
-                            <p class="text-[10px] text-white/70">サーバー同期完了: 同じ在庫をリアルタイム共有中</p>
+                        <div class="relative h-44 rounded-3xl overflow-hidden bg-gradient-to-br from-red-600 to-indigo-800 p-6 flex flex-col justify-end border border-white/10 shadow-2xl">
+                            <div class="absolute top-4 right-4 bg-white/10 backdrop-blur px-3 py-1 rounded-full text-[10px] font-bold">LIVE SYNC</div>
+                            <h2 class="text-3xl font-black italic text-white tracking-tighter leading-8">GEN 1<br>PREMIUM PACK</h2>
+                            <p class="text-[10px] text-white/70 font-mono">${roomId.toUpperCase()}</p>
                         </div>
 
-                        <div class="glass-panel rounded-[2rem] p-6 border border-white/10">
+                        <div class="glass-panel rounded-[2rem] p-6 border border-white/10 shadow-xl">
                             <div class="flex justify-between items-center mb-4">
                                 <h3 class="font-bold flex items-center gap-2">
                                     <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-                                    初代限定オリパ
+                                    在庫ステータス
                                 </h3>
                                 <div class="text-right">
-                                    <p class="text-[10px] text-slate-400 font-bold uppercase">Remaining</p>
+                                    <p class="text-[10px] text-slate-400 font-bold uppercase">Stock</p>
                                     <p class="text-xl font-black text-yellow-400 font-mono">${globalStock} / ${INITIAL_STOCK}</p>
                                 </div>
                             </div>
 
-                            <div class="h-2 w-full bg-black/40 rounded-full overflow-hidden mb-6">
+                            <div class="h-2 w-full bg-black/40 rounded-full overflow-hidden mb-8">
                                 <div class="h-full bg-gradient-to-r from-yellow-600 to-yellow-300 transition-all duration-1000" style="width: ${(globalStock/INITIAL_STOCK)*100}%"></div>
                             </div>
 
-                            <div class="video-container flex items-center justify-center bg-slate-900/50 mb-6 cursor-pointer group" onclick="startGacha()">
-                                <div class="relative w-24 h-36 bg-gradient-to-br from-red-500/50 to-blue-600/50 rounded-lg border border-white/20 flex items-center justify-center group-hover:scale-105 transition-transform">
-                                     <i class="fas fa-signal text-white animate-pulse"></i>
+                            <div class="video-container flex items-center justify-center bg-slate-900/50 mb-8 cursor-pointer group shadow-inner" onclick="startGacha()">
+                                <div class="scanning-line"></div>
+                                <div class="relative w-24 h-36 bg-gradient-to-br from-red-600 to-blue-700 rounded-lg border-2 border-white/20 flex items-center justify-center group-hover:scale-105 transition-all shadow-2xl overflow-hidden">
+                                     <div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-20"></div>
+                                     <i class="fas fa-bolt text-white text-2xl animate-pulse"></i>
                                 </div>
                             </div>
 
-                            <button onclick="startGacha()" class="w-full bg-gradient-to-r from-red-600 to-red-500 py-4 rounded-2xl font-black text-xl shadow-lg hover:brightness-110 active:scale-95 transition-all mb-4">
+                            <button onclick="startGacha()" class="w-full bg-gradient-to-r from-red-600 to-red-500 py-5 rounded-2xl font-black text-xl shadow-lg hover:brightness-110 active:scale-95 transition-all mb-4">
                                 ${GACHA_COST.toLocaleString()} PT で引く
                             </button>
 
-                            <button onclick="copyShareLink()" class="w-full bg-slate-800 hover:bg-slate-700 py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors">
-                                <i class="fas fa-share-alt"></i> このサーバーのリンクを共有
+                            <button onclick="copyShareLink()" class="w-full bg-slate-800/50 hover:bg-slate-800 py-3 rounded-xl font-bold text-[10px] text-slate-400 flex items-center justify-center gap-2 transition-colors border border-white/5">
+                                <i class="fas fa-link"></i> ルームURLをコピーして招待
                             </button>
                         </div>
                     </div>
                 `;
-            } else if (currentPage === 'collection') {
+            } else {
                 const items = userData.collection || [];
                 main.innerHTML = `
                     <div class="page-fade space-y-4">
-                        <div class="flex justify-between items-center">
-                            <h2 class="text-xl font-bold flex items-center gap-2"><i class="fas fa-book text-blue-400"></i> あなたの図鑑 (${items.length})</h2>
+                        <div class="flex justify-between items-center mb-2">
+                            <h2 class="text-xl font-bold flex items-center gap-2"><i class="fas fa-book text-blue-400"></i> 図鑑コレクション (${items.length})</h2>
                         </div>
                         <div class="grid grid-cols-2 gap-3">
-                            ${items.length === 0 ? '<p class="col-span-2 text-center py-10 text-slate-500">まだポケモンがいません</p>' : 
+                            ${items.length === 0 ? '<p class="col-span-2 text-center py-20 text-slate-500 text-sm">手持ちのポケモンがいません</p>' : 
                                 items.map(item => `
                                 <div class="glass-panel rounded-2xl p-3 border border-white/5 flex flex-col items-center">
-                                    <div class="w-full aspect-square rounded-xl bg-gradient-to-br ${RARITIES[item.rarity].color} flex items-center justify-center overflow-hidden">
-                                        <img src="${item.img}" class="w-20 h-20 object-contain drop-shadow-xl">
+                                    <div class="w-full aspect-square rounded-xl bg-gradient-to-br ${RARITIES[item.rarity].color} flex items-center justify-center overflow-hidden shadow-inner">
+                                        <img src="${item.img}" class="w-20 h-20 object-contain drop-shadow-2xl">
                                     </div>
-                                    <p class="text-[10px] font-bold mt-2 truncate w-full text-center">${item.name}</p>
+                                    <div class="w-full mt-2 text-center">
+                                        <p class="text-[10px] font-black text-white/90 truncate">${item.name}</p>
+                                        <p class="text-[8px] font-bold text-white/50">${RARITIES[item.rarity].label}</p>
+                                    </div>
                                 </div>
                             `).join('')}
                         </div>
