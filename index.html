@@ -54,9 +54,25 @@
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+
+        .copy-toast {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #10b981;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 99px;
+            z-index: 200;
+            display: none;
+        }
     </style>
 </head>
 <body class="pb-24">
+
+    <!-- コピー通知用 -->
+    <div id="copy-toast" class="copy-toast font-bold text-sm shadow-lg">URLをコピーしました！</div>
 
     <!-- ヘッダー -->
     <header class="sticky top-0 z-50 glass-panel border-b border-white/5 p-4">
@@ -65,7 +81,10 @@
                 <div class="bg-red-600 p-2 rounded-lg shadow-lg">
                     <i class="fas fa-bolt text-white"></i>
                 </div>
-                <h1 class="font-black text-xl italic tracking-tighter">POKÉ-ORIPA</h1>
+                <div>
+                    <h1 class="font-black text-xl italic tracking-tighter leading-none">POKÉ-ORIPA</h1>
+                    <span id="room-id-display" class="text-[8px] text-slate-400 font-mono uppercase tracking-widest">SERVER: DEFAULT</span>
+                </div>
             </div>
             <div class="flex items-center bg-black/40 px-3 py-1.5 rounded-full border border-yellow-500/30">
                 <i class="fas fa-coins text-yellow-400 mr-2"></i>
@@ -146,24 +165,32 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, increment, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, updateDoc, onSnapshot, increment } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        // --- URLパラメータからルームIDを取得 ---
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomId = urlParams.get('room') || 'default';
 
         // --- Firebase 設定 ---
         const firebaseConfig = JSON.parse(__firebase_config);
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-oripa';
+        
+        // ルームごとに独立したプールを作るために appId を roomId で拡張
+        const appId = typeof __app_id !== 'undefined' ? `${__app_id}_${roomId}` : `pokemon_oripa_${roomId}`;
 
         // --- ゲーム定数 ---
         const GACHA_COST = 500;
         const INITIAL_STOCK = 100;
+        const GEN_1_LIMIT = 151;
+
         const RARITIES = {
-            S: { label: 'S RANK', color: 'from-amber-400 to-red-600', recycle: 2500, range: [1, 151] },
-            A: { label: 'A RANK', color: 'from-purple-500 to-indigo-600', recycle: 800, range: [1, 400] },
-            B: { label: 'B RANK', color: 'from-blue-400 to-blue-600', recycle: 200, range: [1, 800] },
-            C: { label: 'C RANK', color: 'from-slate-400 to-slate-500', recycle: 50, range: [1, 1010] }
+            S: { label: 'S RANK', color: 'from-amber-400 to-red-600', recycle: 2500, range: [1, GEN_1_LIMIT] },
+            A: { label: 'A RANK', color: 'from-purple-500 to-indigo-600', recycle: 800, range: [1, GEN_1_LIMIT] },
+            B: { label: 'B RANK', color: 'from-blue-400 to-blue-600', recycle: 200, range: [1, GEN_1_LIMIT] },
+            C: { label: 'C RANK', color: 'from-slate-400 to-slate-500', recycle: 50, range: [1, GEN_1_LIMIT] }
         };
 
         // --- ローカル状態 ---
@@ -174,13 +201,39 @@
         let currentCard = null;
 
         // --- パスヘルパー (RULE 1 準拠) ---
-        // 公開データ用: /artifacts/{appId}/public/data/{collectionName}/{docId}
         const getPublicDoc = (collectionName, docId) => doc(db, 'artifacts', appId, 'public', 'data', collectionName, docId);
-        // ユーザー用: /artifacts/{appId}/users/{userId}/{collectionName}/{docId}
         const getUserDoc = (userId, collectionName, docId) => doc(db, 'artifacts', appId, 'users', userId, collectionName, docId);
+
+        // --- リンク共有機能 ---
+        window.copyShareLink = () => {
+            const baseUrl = window.location.href.split('?')[0];
+            const randomRoom = Math.random().toString(36).substring(7);
+            const shareUrl = `${baseUrl}?room=${randomRoom}`;
+            
+            // Clipboard API (fallback for iframe)
+            const el = document.createElement('textarea');
+            el.value = shareUrl;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+
+            const toast = document.getElementById('copy-toast');
+            toast.style.display = 'block';
+            setTimeout(() => toast.style.display = 'none', 2000);
+            
+            // 自動的に新しいルームへリダイレクトするか選ばせる代わりに、今のルームURLをコピー
+            const currentShareUrl = window.location.href;
+            el.value = currentShareUrl;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+        };
 
         // --- 初期化フロー ---
         async function init() {
+            document.getElementById('room-id-display').innerText = `SERVER: ${roomId.toUpperCase()}`;
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
@@ -202,9 +255,7 @@
         function setupRealtimeListeners() {
             if (!user) return;
 
-            // 1. 公開在庫の監視 (セグメント数を偶数にするために 'global' コレクション内の 'inventory' ドキュメントを参照)
             const stockDoc = getPublicDoc('global', 'inventory');
-            
             onSnapshot(stockDoc, async (snapshot) => {
                 if (!snapshot.exists()) {
                     await setDoc(stockDoc, { remaining: INITIAL_STOCK });
@@ -215,7 +266,6 @@
                 renderPage();
             }, (error) => console.error("Stock error:", error));
 
-            // 2. ユーザー個別データの監視
             const profileDoc = getUserDoc(user.uid, 'profile', 'main');
             onSnapshot(profileDoc, (snapshot) => {
                 if (!snapshot.exists()) {
@@ -233,7 +283,6 @@
             if (el) el.innerText = (userData.points || 0).toLocaleString();
         }
 
-        // --- ガチャロジック ---
         window.startGacha = async () => {
             if (!user) return;
             if (userData.points < GACHA_COST) return alert("ポイント不足です！");
@@ -243,15 +292,12 @@
             overlay.classList.remove('hidden');
 
             try {
-                // 1. 在庫を減らす (Atomic update)
                 const stockDoc = getPublicDoc('global', 'inventory');
                 await updateDoc(stockDoc, { remaining: increment(-1) });
 
-                // 2. ポイントを消費
                 const profileDoc = getUserDoc(user.uid, 'profile', 'main');
                 await updateDoc(profileDoc, { points: increment(-GACHA_COST) });
 
-                // 3. ポケモン決定
                 const rarityKey = getRandRarityKey();
                 const r = RARITIES[rarityKey];
                 const pokeId = Math.floor(Math.random() * (r.range[1] - r.range[0] + 1)) + r.range[0];
@@ -259,10 +305,13 @@
                 const response = await fetch(`https://pokeapi.co/api/v2/pokemon/${pokeId}`);
                 const data = await response.json();
                 
+                const officialImg = data.sprites.other['official-artwork'].front_default;
+                const defaultImg = data.sprites.front_default;
+
                 currentCard = {
                     id: data.id,
                     name: data.name.toUpperCase(),
-                    img: data.sprites.other['official-artwork'].front_default || data.sprites.front_default,
+                    img: officialImg || defaultImg,
                     rarity: rarityKey,
                     timestamp: Date.now()
                 };
@@ -342,13 +391,16 @@
                 main.innerHTML = `
                     <div class="page-fade space-y-6">
                         <div class="relative h-44 rounded-3xl overflow-hidden bg-gradient-to-br from-red-600 to-indigo-800 p-6 flex flex-col justify-end border border-white/10">
-                            <h2 class="text-3xl font-black italic text-white tracking-tighter">MULTI-LIVE PACK</h2>
-                            <p class="text-xs text-white/70">全ユーザー共通の在庫からリアルタイム抽選！</p>
+                            <h2 class="text-3xl font-black italic text-white tracking-tighter leading-8">GEN 1<br>ONLY PACK</h2>
+                            <p class="text-[10px] text-white/70">サーバー同期完了: 同じ在庫をリアルタイム共有中</p>
                         </div>
 
                         <div class="glass-panel rounded-[2rem] p-6 border border-white/10">
                             <div class="flex justify-between items-center mb-4">
-                                <h3 class="font-bold">伝説確定オリパ</h3>
+                                <h3 class="font-bold flex items-center gap-2">
+                                    <span class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                                    初代限定オリパ
+                                </h3>
                                 <div class="text-right">
                                     <p class="text-[10px] text-slate-400 font-bold uppercase">Remaining</p>
                                     <p class="text-xl font-black text-yellow-400 font-mono">${globalStock} / ${INITIAL_STOCK}</p>
@@ -365,8 +417,12 @@
                                 </div>
                             </div>
 
-                            <button onclick="startGacha()" class="w-full bg-gradient-to-r from-red-600 to-red-500 py-4 rounded-2xl font-black text-xl shadow-lg hover:brightness-110 active:scale-95 transition-all">
+                            <button onclick="startGacha()" class="w-full bg-gradient-to-r from-red-600 to-red-500 py-4 rounded-2xl font-black text-xl shadow-lg hover:brightness-110 active:scale-95 transition-all mb-4">
                                 ${GACHA_COST.toLocaleString()} PT で引く
+                            </button>
+
+                            <button onclick="copyShareLink()" class="w-full bg-slate-800 hover:bg-slate-700 py-3 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-colors">
+                                <i class="fas fa-share-alt"></i> このサーバーのリンクを共有
                             </button>
                         </div>
                     </div>
@@ -375,7 +431,9 @@
                 const items = userData.collection || [];
                 main.innerHTML = `
                     <div class="page-fade space-y-4">
-                        <h2 class="text-xl font-bold flex items-center gap-2"><i class="fas fa-book text-blue-400"></i> あなたの図鑑 (${items.length})</h2>
+                        <div class="flex justify-between items-center">
+                            <h2 class="text-xl font-bold flex items-center gap-2"><i class="fas fa-book text-blue-400"></i> あなたの図鑑 (${items.length})</h2>
+                        </div>
                         <div class="grid grid-cols-2 gap-3">
                             ${items.length === 0 ? '<p class="col-span-2 text-center py-10 text-slate-500">まだポケモンがいません</p>' : 
                                 items.map(item => `
