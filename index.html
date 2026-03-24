@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -68,7 +67,6 @@
     <!-- 全画面演出レイヤー (開封時に表示) -->
     <div id="fullscreen-video-layer">
         <video id="main-video" playsinline></video>
-        <!-- 動画終了後に表示される結果 -->
         <div id="final-result-overlay" class="absolute inset-0 bg-black/90 flex flex-col items-center justify-center hidden p-6">
             <div id="result-card-container" class="result-card-anim w-full max-w-[320px] aspect-[3/4] rounded-3xl overflow-hidden border-4 border-yellow-400 shadow-[0_0_50px_rgba(250,204,21,0.5)] bg-zinc-900 mb-8">
                 <img id="result-card-img" src="" class="w-full h-full object-cover">
@@ -94,7 +92,7 @@
             <button id="btn-share" class="hidden bg-yellow-400 text-black px-4 py-1.5 rounded-full text-[11px] font-black flex items-center gap-1">
                 <i class="fas fa-share-alt"></i> 招待
             </button>
-            <button id="btn-settings" class="p-2 border border-yellow-500/30 rounded-full text-yellow-400">
+            <button id="btn-settings" class="hidden p-2 border border-yellow-500/30 rounded-full text-yellow-400">
                 <i class="fas fa-cog"></i>
             </button>
         </div>
@@ -103,7 +101,8 @@
     <!-- Main -->
     <main class="flex-1 relative flex flex-col items-center justify-center p-6 overflow-y-auto pb-32">
         
-        <div class="absolute top-6 flex items-center gap-2 bg-yellow-400/10 border border-yellow-400/20 px-4 py-1.5 rounded-full z-10">
+        <!-- Status Dot (Host Only) -->
+        <div id="status-container" class="absolute top-6 flex items-center gap-2 bg-yellow-400/10 border border-yellow-400/20 px-4 py-1.5 rounded-full z-10 hidden">
             <div id="status-dot" class="w-1.5 h-1.5 rounded-full bg-red-500"></div>
             <span id="status-text" class="text-[10px] font-bold uppercase text-yellow-400/80">Connecting...</span>
         </div>
@@ -146,7 +145,7 @@
 
         <!-- List View -->
         <div id="oripa-list-view" class="w-full max-w-sm space-y-4 hidden">
-            <h2 class="text-xl font-black text-yellow-400 italic mb-4">公開中のオリパ</h2>
+            <h2 class="text-xl font-black text-yellow-400 italic mb-4 text-center">公開中のオリパ</h2>
             <div id="oripa-items-container" class="space-y-3"></div>
             <button id="btn-back-to-setup" class="hidden w-full py-3 text-zinc-500 text-xs font-bold border border-zinc-800 rounded-xl">新規作成に戻る</button>
         </div>
@@ -187,7 +186,7 @@
         </div>
     </footer>
 
-    <!-- Settings -->
+    <!-- Settings (Host Only) -->
     <div id="settings-overlay" class="fixed inset-0 z-50 bg-black/95 hidden flex flex-col">
         <div class="flex justify-between items-center p-6 border-b border-white/5">
             <h2 class="text-xl font-black text-yellow-400 italic">SETTINGS</h2>
@@ -207,6 +206,7 @@
         let peer, conn, connections = [], oripas = [], role = null, currentOripaId = null;
 
         const els = {
+            statusContainer: document.getElementById('status-container'),
             statusText: document.getElementById('status-text'),
             statusDot: document.getElementById('status-dot'),
             setupView: document.getElementById('setup-view'),
@@ -235,7 +235,8 @@
             inputImage: document.getElementById('input-image'),
             inputWinImage: document.getElementById('input-win-image'),
             myIdDisplay: document.getElementById('my-id-display'),
-            btnShare: document.getElementById('btn-share')
+            btnShare: document.getElementById('btn-share'),
+            btnSettings: document.getElementById('btn-settings')
         };
 
         const thumbs = { main: '', win: '' };
@@ -251,29 +252,35 @@
                     role = 'host';
                     els.setupView.classList.remove('hidden');
                     els.btnBackSetup.classList.remove('hidden');
-                    els.btnShare.classList.remove('hidden'); // ホストのみ招待ボタンを表示
+                    els.btnShare.classList.remove('hidden');
+                    els.btnSettings.classList.remove('hidden');
+                    els.statusContainer.classList.remove('hidden');
                 }
             });
             peer.on('connection', (c) => {
                 role = 'host';
                 connections.push(c);
                 setupConnection(c);
-                // 新しい接続に最新のリストを送る
                 setTimeout(() => broadcast({ type: 'SYNC_LIST', oripas }), 1000);
             });
         }
 
         function connectToHost(id) {
             role = 'guest';
-            els.btnShare.classList.add('hidden'); // ゲストは招待ボタンを非表示
+            // ゲストの場合は設定ボタンとステータス表示を徹底的に隠す
+            els.btnShare.classList.add('hidden');
+            els.btnSettings.classList.add('hidden');
+            els.statusContainer.classList.add('hidden');
             conn = peer.connect(id);
             setupConnection(conn);
         }
 
         function setupConnection(c) {
             c.on('open', () => {
-                els.statusDot.className = 'w-1.5 h-1.5 rounded-full bg-green-500';
-                els.statusText.innerText = 'Connected';
+                if (role === 'host') {
+                    els.statusDot.className = 'w-1.5 h-1.5 rounded-full bg-green-500';
+                    els.statusText.innerText = 'Online';
+                }
                 if(role === 'guest') sendData({ type: 'REQUEST_SYNC' });
             });
             c.on('data', (data) => {
@@ -286,12 +293,10 @@
                         if (!currentOripaId) showListView(); else updateOripaInGame();
                         break;
                     case 'RESULT':
-                        // ゲストが引いた結果をホストが受信
                         if(role === 'host') {
                             const o = oripas.find(item => item.id === data.oripaId);
                             if(o) {
                                 o.deck = data.newDeck;
-                                // 全員に最新の在庫状況をリアルタイムブロードキャスト
                                 broadcast({ type: 'SYNC_LIST', oripas });
                                 updateOripaInGame();
                             }
@@ -381,24 +386,17 @@
             }
         }
 
-        // --- 開封演出ロジック ---
-
         els.btnPull.onclick = () => {
             const o = oripas.find(item => item.id === currentOripaId);
             if (!o || o.deck.length === 0) return;
 
-            // 1. 操作ロック（連打防止）
             els.btnPull.disabled = true;
-
-            // 2. カードを確定
             const card = o.deck.pop();
             
-            // 3. 動画準備
             els.mainVideo.src = card.win ? '1.mp4' : '2.mp4';
             els.mainVideo.volume = 1.0; 
             els.mainVideo.muted = false; 
             
-            // 4. 全画面表示レイヤーを表示
             els.fsLayer.style.display = 'flex';
             els.resultOverlay.classList.add('hidden');
             
@@ -411,7 +409,6 @@
             }
 
             els.mainVideo.onended = () => {
-                // 5. 結果表示
                 els.resultOverlay.classList.remove('hidden');
                 if (card.win) {
                     els.resultBadge.innerText = "WINNER!!";
@@ -428,12 +425,9 @@
                     els.loseContainer.classList.remove('hidden');
                 }
                 
-                // 6. データの同期
                 if (role === 'guest') {
-                    // ゲストの場合はホストに結果を送る
                     sendData({ type: 'RESULT', oripaId: currentOripaId, newDeck: o.deck });
                 } else {
-                    // ホスト自身が引いた場合は全員に即座に同期
                     broadcast({ type: 'SYNC_LIST', oripas });
                 }
                 updateOripaInGame();
@@ -447,8 +441,6 @@
             const o = oripas.find(o => o.id === currentOripaId);
             els.btnPull.disabled = (!o || o.deck.length === 0);
         };
-
-        // --- ホスト操作 ---
 
         document.getElementById('btn-add-oripa').onclick = () => {
             const win = parseInt(document.getElementById('input-win-count').value) || 0;
@@ -487,8 +479,6 @@
             }
         };
 
-        // --- Helpers ---
-
         els.inputImage.onchange = (e) => handleFile(e, 'main');
         els.inputWinImage.onchange = (e) => handleFile(e, 'win');
         function handleFile(e, key) {
@@ -516,7 +506,7 @@
             setTimeout(() => toast.classList.remove('show'), 3000);
         };
         
-        document.getElementById('btn-settings').onclick = () => document.getElementById('settings-overlay').classList.remove('hidden');
+        els.btnSettings.onclick = () => document.getElementById('settings-overlay').classList.remove('hidden');
         document.getElementById('btn-close-settings').onclick = () => document.getElementById('settings-overlay').classList.add('hidden');
 
         initPeer();
