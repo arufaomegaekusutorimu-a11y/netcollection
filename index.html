@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -233,7 +234,8 @@
             btnCloseResult: document.getElementById('btn-close-result'),
             inputImage: document.getElementById('input-image'),
             inputWinImage: document.getElementById('input-win-image'),
-            myIdDisplay: document.getElementById('my-id-display')
+            myIdDisplay: document.getElementById('my-id-display'),
+            btnShare: document.getElementById('btn-share')
         };
 
         const thumbs = { main: '', win: '' };
@@ -242,21 +244,28 @@
             peer = new Peer();
             peer.on('open', (id) => {
                 els.myIdDisplay.innerText = id;
-                document.getElementById('btn-share').classList.remove('hidden');
                 const hostId = new URLSearchParams(window.location.search).get('host');
-                if (hostId && hostId !== id) connectToHost(hostId);
-                else { role = 'host'; els.setupView.classList.remove('hidden'); els.btnBackSetup.classList.remove('hidden'); }
+                if (hostId && hostId !== id) {
+                    connectToHost(hostId);
+                } else {
+                    role = 'host';
+                    els.setupView.classList.remove('hidden');
+                    els.btnBackSetup.classList.remove('hidden');
+                    els.btnShare.classList.remove('hidden'); // ホストのみ招待ボタンを表示
+                }
             });
             peer.on('connection', (c) => {
                 role = 'host';
                 connections.push(c);
                 setupConnection(c);
+                // 新しい接続に最新のリストを送る
                 setTimeout(() => broadcast({ type: 'SYNC_LIST', oripas }), 1000);
             });
         }
 
         function connectToHost(id) {
             role = 'guest';
+            els.btnShare.classList.add('hidden'); // ゲストは招待ボタンを非表示
             conn = peer.connect(id);
             setupConnection(conn);
         }
@@ -276,9 +285,26 @@
                         oripas = data.oripas;
                         if (!currentOripaId) showListView(); else updateOripaInGame();
                         break;
+                    case 'RESULT':
+                        // ゲストが引いた結果をホストが受信
+                        if(role === 'host') {
+                            const o = oripas.find(item => item.id === data.oripaId);
+                            if(o) {
+                                o.deck = data.newDeck;
+                                // 全員に最新の在庫状況をリアルタイムブロードキャスト
+                                broadcast({ type: 'SYNC_LIST', oripas });
+                                updateOripaInGame();
+                            }
+                        }
+                        break;
                     case 'ORIPA_REMOVED':
                         oripas = oripas.filter(o => o.id !== data.oripaId);
-                        if(currentOripaId === data.oripaId) { alert('このオリパは終了しました'); showListView(); } else renderOripaList();
+                        if(currentOripaId === data.oripaId) { 
+                            alert('このオリパは終了しました'); 
+                            showListView(); 
+                        } else {
+                            renderOripaList();
+                        }
                         break;
                 }
             });
@@ -369,26 +395,23 @@
             
             // 3. 動画準備
             els.mainVideo.src = card.win ? '1.mp4' : '2.mp4';
-            els.mainVideo.volume = 1.0; // 音量を最大に
-            els.mainVideo.muted = false; // 音が出るように設定
+            els.mainVideo.volume = 1.0; 
+            els.mainVideo.muted = false; 
             
             // 4. 全画面表示レイヤーを表示
             els.fsLayer.style.display = 'flex';
             els.resultOverlay.classList.add('hidden');
             
-            // 動画再生（ブラウザ制限回避のため、play()の結果をハンドリング）
             const playPromise = els.mainVideo.play();
             if (playPromise !== undefined) {
                 playPromise.catch(error => {
-                    console.log("Playback interaction required: ", error);
-                    // 失敗した場合は、ミュートにしてでも再生（最低限映像は出す）
                     els.mainVideo.muted = true;
                     els.mainVideo.play();
                 });
             }
 
             els.mainVideo.onended = () => {
-                // 5. 動画終了後の結果表示
+                // 5. 結果表示
                 els.resultOverlay.classList.remove('hidden');
                 if (card.win) {
                     els.resultBadge.innerText = "WINNER!!";
@@ -407,8 +430,10 @@
                 
                 // 6. データの同期
                 if (role === 'guest') {
+                    // ゲストの場合はホストに結果を送る
                     sendData({ type: 'RESULT', oripaId: currentOripaId, newDeck: o.deck });
                 } else {
+                    // ホスト自身が引いた場合は全員に即座に同期
                     broadcast({ type: 'SYNC_LIST', oripas });
                 }
                 updateOripaInGame();
@@ -448,7 +473,6 @@
             broadcast({ type: 'SYNC_LIST', oripas });
             showListView();
             
-            // 入力リセット
             document.getElementById('input-title').value = '';
             thumbs.main = '';
             thumbs.win = '';
@@ -479,7 +503,7 @@
         els.btnShowList.onclick = () => showListView();
         els.btnBackSetup.onclick = () => { els.oripaListView.classList.add('hidden'); els.setupView.classList.remove('hidden'); };
         
-        document.getElementById('btn-share').onclick = () => {
+        els.btnShare.onclick = () => {
             const url = `${window.location.origin}${window.location.pathname}?host=${peer.id}`;
             const t = document.createElement("textarea"); 
             t.value = url; 
