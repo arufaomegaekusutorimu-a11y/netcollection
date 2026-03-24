@@ -27,13 +27,12 @@
 
         @keyframes shimmer { 0% { background-position: -200% -200%; } 100% { background-position: 200% 200%; } }
 
-        /* 動画を画面いっぱいに表示（コントロール非表示） */
         .video-container video {
             width: 100%;
             height: 100%;
             object-fit: cover;
             background: black;
-            pointer-events: none; /* クリックで再生バーが出ないようにする */
+            pointer-events: none;
         }
 
         .toast { transform: translateX(-50%) translateY(100px); transition: transform 0.3s ease; }
@@ -160,9 +159,9 @@
                         </div>
                     </div>
 
-                    <!-- Video Result (Controls removed) -->
+                    <!-- Video Result -->
                     <div id="card-result" class="hidden absolute inset-0 bg-black video-container">
-                        <video id="result-video" playsinline muted disablePictureInPicture disableremoteplayback>
+                        <video id="result-video" playsinline muted disablePictureInPicture disableremoteplayback preload="auto">
                             <!-- Video Source -->
                         </video>
                         <div id="result-overlay" class="absolute inset-0 bg-black/70 flex flex-col items-center justify-center opacity-0 transition-opacity duration-500 pointer-events-none">
@@ -175,7 +174,7 @@
         </div>
     </main>
 
-    <!-- Footer (Only for Guests in Game or Host globally) -->
+    <!-- Footer -->
     <footer id="controls" class="p-6 pb-12 bg-black border-t border-yellow-500/10 hidden z-30">
         <div class="max-w-md mx-auto space-y-6">
             <div class="flex justify-between items-end">
@@ -191,14 +190,14 @@
                 <i class="fas fa-bolt"></i> 開封する
             </button>
             
-            <!-- Host Reset (Visible in Game) -->
+            <!-- Host Reset -->
             <button id="btn-reset" class="hidden w-full bg-red-600/10 text-red-500 border border-red-500/20 rounded-2xl py-3 font-bold text-xs active:bg-red-600/20">
                 このオリパを完売/削除する
             </button>
         </div>
     </footer>
 
-    <!-- Settings -->
+    <!-- Settings Overlay -->
     <div id="settings-overlay" class="fixed inset-0 z-50 bg-black/95 backdrop-blur-sm hidden flex flex-col">
         <div class="flex justify-between items-center p-6 border-b border-white/5">
             <h2 class="text-xl font-black text-yellow-400 tracking-tighter italic uppercase">Network Settings</h2>
@@ -216,7 +215,8 @@
 
     <script>
         let peer, conn, myId = '', role = null;
-        let oripas = []; // { id, title, imageData, winCount, loseCount, deck, total }
+        let connections = []; // ホスト用：接続中の全ゲストを保持
+        let oripas = []; 
         let currentOripaId = null;
 
         const els = {
@@ -265,39 +265,71 @@
                 }
             });
             peer.on('connection', (c) => { 
-                conn = c; role = 'host'; setupConnection(); 
-                sendData({ type: 'SYNC_LIST', oripas });
+                conn = c; 
+                role = 'host'; 
+                connections.push(c);
+                setupConnection(c); 
+                // 接続直後は少し待ってからリストを送信（相手の受信準備を待つ）
+                setTimeout(() => broadcast({ type: 'SYNC_LIST', oripas }), 1000);
             });
         }
 
         function connectToHost(id) {
-            role = 'guest'; conn = peer.connect(id);
-            setupConnection();
+            role = 'guest'; 
+            conn = peer.connect(id);
+            setupConnection(conn);
             els.statusText.innerText = 'ホストに接続中...';
         }
 
-        function setupConnection() {
-            conn.on('open', () => { 
+        function setupConnection(c) {
+            c.on('open', () => { 
                 els.statusDot.className = 'w-1.5 h-1.5 rounded-full bg-green-500';
-                if(role === 'guest') els.statusText.innerText = '接続完了';
+                if(role === 'guest') {
+                    els.statusText.innerText = '接続完了';
+                    // ゲスト側から同期をリクエスト
+                    sendData({ type: 'REQUEST_SYNC' });
+                }
             });
-            conn.on('data', (data) => handleData(data));
+            c.on('data', (data) => handleData(data));
+            c.on('close', () => {
+                if(role === 'host') {
+                    connections = connections.filter(con => con !== c);
+                }
+                els.statusDot.className = 'w-1.5 h-1.5 rounded-full bg-red-500';
+            });
         }
 
         function handleData(data) {
+            console.log("Received:", data.type, data);
             switch(data.type) {
+                case 'REQUEST_SYNC':
+                    if(role === 'host') broadcast({ type: 'SYNC_LIST', oripas });
+                    break;
                 case 'SYNC_LIST':
                     oripas = data.oripas;
                     if (!currentOripaId) showListView();
                     else updateOripaInGame();
                     break;
                 case 'START_SPIN':
+                    // 他のゲストにもスピン開始を伝える（ブロードキャスト）
+                    if(role === 'host') broadcast(data);
                     if (data.oripaId === currentOripaId) showSpinningUI();
                     break;
                 case 'RESULT':
-                    if (data.oripaId === currentOripaId) showResultUI(data.card, data.newDeck);
+                    if(role === 'host') {
+                        // ホスト側でデータを更新して全員に同期
+                        const o = oripas.find(item => item.id === data.oripaId);
+                        if(o) o.deck = data.newDeck;
+                        broadcast({ type: 'SYNC_LIST', oripas });
+                        broadcast(data); // 演出用
+                    }
+                    if (data.oripaId === currentOripaId) {
+                        prepareVideo(data.card.win);
+                        showResultUI(data.card, data.newDeck);
+                    }
                     break;
                 case 'ORIPA_REMOVED':
+                    if(role === 'host') broadcast(data);
                     oripas = oripas.filter(o => o.id !== data.oripaId);
                     if (currentOripaId === data.oripaId) {
                         alert('このオリパは終了しました');
@@ -309,9 +341,16 @@
             }
         }
 
+        // 個別に送る用
         function sendData(d) { if (conn && conn.open) conn.send(d); }
 
-        // --- View Management ---
+        // ホストから全員に送る用
+        function broadcast(d) {
+            if(role !== 'host') return;
+            connections.forEach(c => {
+                if(c.open) c.send(d);
+            });
+        }
 
         function showListView() {
             currentOripaId = null;
@@ -354,7 +393,6 @@
             els.gameView.classList.remove('hidden');
             els.controls.classList.remove('hidden');
             
-            // ホストはリセットのみ、ゲストは開封のみ
             if (role === 'host') {
                 els.btnPull.classList.add('hidden');
                 els.btnReset.classList.remove('hidden');
@@ -363,7 +401,6 @@
                 els.btnReset.classList.add('hidden');
             }
             
-            // UIリセット
             els.cardIdle.classList.remove('hidden');
             els.cardSpinning.classList.add('hidden');
             els.cardResult.classList.add('hidden');
@@ -383,7 +420,6 @@
             els.deckCount.innerText = o.deck.length;
             els.totalCount.innerText = o.total;
             
-            // Progress dots
             els.deckProgress.innerHTML = '';
             const maxDots = 5;
             const filled = Math.ceil((o.deck.length / o.total) * maxDots);
@@ -392,8 +428,7 @@
                 dot.className = `w-8 h-1 rounded-full ${i < filled ? 'bg-yellow-400' : 'bg-zinc-800'}`;
                 els.deckProgress.appendChild(dot);
             }
-            if (o.deck.length === 0) els.btnPull.disabled = true;
-            else els.btnPull.disabled = false;
+            els.btnPull.disabled = o.deck.length === 0;
         }
 
         function showSpinningUI() {
@@ -401,6 +436,11 @@
             els.cardResult.classList.add('hidden');
             els.cardSpinning.classList.remove('hidden');
             els.resultOverlay.classList.add('opacity-0');
+        }
+
+        function prepareVideo(isWin) {
+            els.resultVideo.src = isWin ? '1.mp4' : '2.mp4';
+            els.resultVideo.load();
         }
 
         function showResultUI(card, newDeck) {
@@ -411,8 +451,6 @@
             els.cardSpinning.classList.add('hidden');
             els.cardResult.classList.remove('hidden');
             
-            const videoSrc = card.win ? '1.mp4' : '2.mp4';
-            
             if (card.win) {
                 els.cardAura.className = "absolute -inset-6 rounded-[3rem] blur-3xl transition-all duration-1000 bg-yellow-400 opacity-60 animate-pulse";
                 els.resultText.innerText = "WIN!!"; els.resultText.className = "text-4xl font-black italic tracking-tighter uppercase mb-2 text-yellow-400";
@@ -421,8 +459,11 @@
                 els.resultText.innerText = "LOSE"; els.resultText.className = "text-4xl font-black italic tracking-tighter uppercase mb-2 text-zinc-400";
             }
 
-            els.resultVideo.src = videoSrc;
-            els.resultVideo.play().catch(e => console.log("Video fail", e));
+            els.resultVideo.play().catch(e => {
+                console.log("Play failed", e);
+                els.resultOverlay.classList.remove('opacity-0');
+            });
+
             els.resultVideo.onended = () => {
                 els.resultOverlay.classList.remove('opacity-0');
             };
@@ -454,10 +495,9 @@
             };
 
             oripas.push(newOripa);
-            sendData({ type: 'SYNC_LIST', oripas });
+            broadcast({ type: 'SYNC_LIST', oripas });
             showListView();
             
-            // Reset input
             document.getElementById('input-title').value = '';
             els.imageLabel.innerText = '画像を選択';
             delete els.imageLabel.dataset.src;
@@ -471,20 +511,21 @@
             showSpinningUI();
             sendData({ type: 'START_SPIN', oripaId: currentOripaId });
 
+            const card = o.deck.pop();
+            prepareVideo(card.win);
+
             setTimeout(() => {
-                const card = o.deck.pop();
                 showResultUI(card, o.deck);
+                // ホストに結果を送る（ホストが全員にブロードキャストする）
                 sendData({ type: 'RESULT', oripaId: currentOripaId, card, newDeck: o.deck });
-                // ホストへ状態を強制同期
-                sendData({ type: 'SYNC_LIST', oripas });
-            }, 2000);
+            }, 500);
         };
 
         els.btnReset.onclick = () => {
             if (confirm('このオリパを削除しますか？')) {
                 const idToRemove = currentOripaId;
                 oripas = oripas.filter(o => o.id !== idToRemove);
-                sendData({ type: 'ORIPA_REMOVED', oripaId: idToRemove });
+                broadcast({ type: 'ORIPA_REMOVED', oripaId: idToRemove });
                 showListView();
             }
         };
@@ -516,6 +557,14 @@
 
         document.getElementById('btn-settings').onclick = () => document.getElementById('settings-overlay').classList.remove('hidden');
         document.getElementById('btn-close-settings').onclick = () => document.getElementById('settings-overlay').classList.add('hidden');
+
+        els.cardResult.onclick = () => {
+            if (els.resultVideo.paused || els.resultVideo.ended) {
+                els.cardResult.classList.add('hidden');
+                els.cardIdle.classList.remove('hidden');
+                els.cardAura.className = "absolute -inset-6 rounded-[3rem] blur-3xl opacity-0 transition-all duration-1000";
+            }
+        };
 
         initPeer();
     </script>
