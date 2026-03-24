@@ -2,48 +2,84 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>ORIPA.P2P - オンラインオリパ</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
         
         body {
-            font-family: 'Inter', sans-serif;
-            background-color: #0a0a0a;
+            font-family: 'Noto Sans JP', sans-serif;
+            background-color: #050505;
             color: #ffffff;
             user-select: none;
-            -webkit-tap-highlight-color: transparent;
             overflow: hidden;
         }
 
-        .bg-shimmer {
-            background: linear-gradient(45deg, transparent 25%, rgba(250, 204, 21, 0.1) 50%, transparent 75%);
-            background-size: 250% 250%;
-            animation: shimmer 2s infinite linear;
+        /* 全画面動画オーバーレイ */
+        #fullscreen-video-layer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: black;
+            z-index: 9999;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
         }
 
-        @keyframes shimmer { 0% { background-position: -200% -200%; } 100% { background-position: 200% 200%; } }
-
-        .video-container video {
+        #fullscreen-video-layer video {
             width: 100%;
             height: 100%;
-            object-fit: cover;
-            background: black;
-            pointer-events: none;
+            object-fit: contain;
         }
+
+        .result-card-anim {
+            animation: card-pop 0.6s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+
+        @keyframes card-pop {
+            0% { transform: scale(0.5) translateY(100px); opacity: 0; }
+            100% { transform: scale(1) translateY(0); opacity: 1; }
+        }
+
+        .shimmer-text {
+            background: linear-gradient(90deg, #fff, #FACC15, #fff);
+            background-size: 200% auto;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: shine 2s linear infinite;
+        }
+
+        @keyframes shine { to { background-position: 200% center; } }
 
         .toast { transform: translateX(-50%) translateY(100px); transition: transform 0.3s ease; }
         .toast.show { transform: translateX(-50%) translateY(0); }
-
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: #000; }
-        ::-webkit-scrollbar-thumb { background: #FACC15; border-radius: 10px; }
     </style>
 </head>
 <body class="fixed inset-0 flex flex-col">
+
+    <!-- 全画面演出レイヤー (開封時に表示) -->
+    <div id="fullscreen-video-layer">
+        <video id="main-video" playsinline></video>
+        <!-- 動画終了後に表示される結果 -->
+        <div id="final-result-overlay" class="absolute inset-0 bg-black/90 flex flex-col items-center justify-center hidden p-6">
+            <div id="result-card-container" class="result-card-anim w-full max-w-[320px] aspect-[3/4] rounded-3xl overflow-hidden border-4 border-yellow-400 shadow-[0_0_50px_rgba(250,204,21,0.5)] bg-zinc-900 mb-8">
+                <img id="result-card-img" src="" class="w-full h-full object-cover">
+                <div id="lose-text-container" class="w-full h-full flex flex-col items-center justify-center bg-zinc-900">
+                     <i class="fas fa-times-circle text-zinc-700 text-8xl mb-4"></i>
+                     <h2 class="text-4xl font-black text-zinc-500">ハズレ</h2>
+                </div>
+            </div>
+            <h2 id="result-badge" class="text-5xl font-black italic shimmer-text mb-8">WINNER!!</h2>
+            <button id="btn-close-result" class="bg-white text-black px-12 py-4 rounded-full font-black text-lg active:scale-95 transition-transform">閉じる</button>
+        </div>
+    </div>
 
     <!-- Header -->
     <header class="px-6 py-4 flex justify-between items-center z-20 border-b border-yellow-500/20 bg-black">
@@ -54,170 +90,120 @@
             <h1 class="text-xl font-black italic tracking-tighter text-yellow-400">ORIPA.P2P</h1>
         </div>
         <div class="flex gap-2">
-            <button id="btn-share" class="hidden bg-yellow-400 text-black px-4 py-1.5 rounded-full text-[11px] font-black flex items-center gap-1 active:scale-95 transition-transform">
-                <i class="fas fa-share-alt"></i> 招待リンク
+            <button id="btn-share" class="hidden bg-yellow-400 text-black px-4 py-1.5 rounded-full text-[11px] font-black flex items-center gap-1">
+                <i class="fas fa-share-alt"></i> 招待
             </button>
-            <button id="btn-settings" class="p-2 border border-yellow-500/30 rounded-full text-yellow-400 active:bg-yellow-400/10">
+            <button id="btn-settings" class="p-2 border border-yellow-500/30 rounded-full text-yellow-400">
                 <i class="fas fa-cog"></i>
             </button>
         </div>
     </header>
 
-    <!-- Main Content -->
+    <!-- Main -->
     <main class="flex-1 relative flex flex-col items-center justify-center p-6 overflow-y-auto pb-32">
         
-        <!-- Status -->
         <div class="absolute top-6 flex items-center gap-2 bg-yellow-400/10 border border-yellow-400/20 px-4 py-1.5 rounded-full z-10">
             <div id="status-dot" class="w-1.5 h-1.5 rounded-full bg-red-500"></div>
-            <span id="status-text" class="text-[10px] font-bold tracking-widest uppercase text-yellow-400/80">初期化中...</span>
+            <span id="status-text" class="text-[10px] font-bold uppercase text-yellow-400/80">Connecting...</span>
         </div>
 
-        <!-- Setup Form (Host Only) -->
+        <!-- Setup View (Host Only) -->
         <div id="setup-view" class="w-full max-w-sm bg-zinc-900/50 border border-yellow-500/20 rounded-3xl p-6 hidden">
-            <div class="flex items-center justify-between mb-6">
-                <div class="flex items-center gap-3">
-                    <i class="fas fa-edit text-yellow-400 text-xl"></i>
-                    <h2 class="text-lg font-black text-yellow-400">オリパ作成</h2>
-                </div>
-                <button id="btn-show-list" class="text-[10px] font-bold text-zinc-400 underline">作成済み一覧</button>
-            </div>
+            <h2 class="text-lg font-black text-yellow-400 mb-6"><i class="fas fa-plus-circle mr-2"></i>オリパ作成</h2>
             
             <div class="space-y-4">
-                <div>
-                    <label class="text-[10px] font-bold text-zinc-500 uppercase block mb-1">オリパ名</label>
-                    <input id="input-title" type="text" placeholder="例: 爆アド2択オリパ" class="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm focus:border-yellow-400 outline-none">
-                </div>
+                <input id="input-title" type="text" placeholder="オリパタイトル" class="w-full bg-black border border-zinc-800 rounded-xl px-4 py-3 text-sm focus:border-yellow-400 outline-none">
                 
-                <div>
-                    <label class="text-[10px] font-bold text-zinc-500 uppercase block mb-1">サムネイル</label>
-                    <label class="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-xs flex items-center justify-center gap-2 cursor-pointer active:bg-zinc-700">
-                        <i class="fas fa-image"></i> <span id="image-label">画像を選択</span>
+                <div class="grid grid-cols-2 gap-3">
+                    <label class="bg-zinc-800 border border-zinc-700 rounded-xl p-3 text-center cursor-pointer">
+                        <span class="text-[10px] font-bold text-zinc-500 block mb-1">サムネイル</span>
+                        <i class="fas fa-image text-zinc-400"></i>
                         <input id="input-image" type="file" accept="image/*" class="hidden">
+                    </label>
+                    <label class="bg-zinc-800 border border-zinc-700 rounded-xl p-3 text-center cursor-pointer border-yellow-500/50">
+                        <span class="text-[10px] font-bold text-yellow-500 block mb-1">当たりカード</span>
+                        <i class="fas fa-star text-yellow-400"></i>
+                        <input id="input-win-image" type="file" accept="image/*" class="hidden">
                     </label>
                 </div>
 
                 <div class="grid grid-cols-2 gap-3">
-                    <div class="bg-black/40 p-3 rounded-xl border border-green-500/20">
-                        <label class="text-[10px] font-bold text-green-500 uppercase block mb-1">当たり数</label>
-                        <input id="input-win-count" type="number" value="1" min="0" class="w-full bg-transparent text-xl font-bold outline-none text-white">
+                    <div class="bg-black/40 p-3 rounded-xl border border-zinc-800">
+                        <label class="text-[10px] font-bold text-zinc-500 block mb-1">当たり数</label>
+                        <input id="input-win-count" type="number" value="1" class="w-full bg-transparent font-bold outline-none">
                     </div>
-                    <div class="bg-black/40 p-3 rounded-xl border border-red-500/20">
-                        <label class="text-[10px] font-bold text-red-500 uppercase block mb-1">ハズレ数</label>
-                        <input id="input-lose-count" type="number" value="9" min="0" class="w-full bg-transparent text-xl font-bold outline-none text-white">
+                    <div class="bg-black/40 p-3 rounded-xl border border-zinc-800">
+                        <label class="text-[10px] font-bold text-zinc-500 block mb-1">ハズレ数</label>
+                        <input id="input-lose-count" type="number" value="9" class="w-full bg-transparent font-bold outline-none">
                     </div>
                 </div>
             </div>
             
-            <button id="btn-add-oripa" class="w-full bg-yellow-400 text-black font-black py-4 rounded-xl mt-6 active:scale-95 transition-transform shadow-lg shadow-yellow-400/20">
-                オリパを公開する
-            </button>
+            <button id="btn-add-oripa" class="w-full bg-yellow-400 text-black font-black py-4 rounded-xl mt-6 shadow-lg shadow-yellow-400/20">公開する</button>
+            <button id="btn-show-list" class="w-full mt-4 text-xs font-bold text-zinc-500">公開中のリストを見る</button>
         </div>
 
-        <!-- Created Oripas List (Host/Guest) -->
+        <!-- List View -->
         <div id="oripa-list-view" class="w-full max-w-sm space-y-4 hidden">
-            <h2 class="text-xl font-black text-yellow-400 italic mb-4 flex items-center gap-2">
-                <i class="fas fa-layer-group"></i> 公開中のオリパ
-            </h2>
-            <div id="oripa-items-container" class="space-y-3">
-                <!-- Items injected here -->
-            </div>
-            <button id="btn-back-to-setup" class="hidden w-full py-3 text-zinc-500 text-xs font-bold border border-zinc-800 rounded-xl">
-                新規作成に戻る
-            </button>
+            <h2 class="text-xl font-black text-yellow-400 italic mb-4">公開中のオリパ</h2>
+            <div id="oripa-items-container" class="space-y-3"></div>
+            <button id="btn-back-to-setup" class="hidden w-full py-3 text-zinc-500 text-xs font-bold border border-zinc-800 rounded-xl">新規作成に戻る</button>
         </div>
 
         <!-- Game View -->
         <div id="game-view" class="w-full flex flex-col items-center hidden">
-            <button id="btn-leave-game" class="mb-4 text-zinc-500 text-xs font-bold flex items-center gap-1">
-                <i class="fas fa-chevron-left"></i> 一覧に戻る
-            </button>
+            <button id="btn-leave-game" class="mb-4 text-zinc-500 text-xs font-bold"><i class="fas fa-chevron-left mr-1"></i>戻る</button>
+            <h2 id="display-title" class="text-2xl font-black text-yellow-400 italic mb-8 uppercase text-center">TITLE</h2>
 
-            <div class="w-full max-w-[320px] mb-6 flex flex-col items-center">
-                <div id="display-thumb-container" class="w-full aspect-video bg-zinc-900 rounded-2xl overflow-hidden border border-yellow-500/20 mb-4 hidden">
-                    <img id="display-thumb" src="" class="w-full h-full object-cover">
-                </div>
-                <h2 id="display-title" class="text-2xl font-black text-yellow-400 italic uppercase tracking-tighter text-center">TITLE</h2>
-            </div>
-
-            <div id="card-stage" class="w-full max-w-[300px] aspect-[3/4] relative">
-                <div id="card-aura" class="absolute -inset-6 rounded-[3rem] blur-3xl opacity-0 transition-all duration-1000"></div>
-                <div id="card-display" class="w-full h-full rounded-[2.5rem] bg-zinc-900 border-2 border-zinc-800 flex flex-col items-center justify-center text-zinc-700 transition-all shadow-2xl relative overflow-hidden">
-                    
-                    <!-- Idle state -->
-                    <div id="card-idle" class="flex flex-col items-center">
-                        <div class="w-20 h-20 bg-yellow-400 rounded-full flex items-center justify-center mb-6 shadow-lg shadow-yellow-400/20 animate-bounce">
-                            <i class="fas fa-gift text-black text-3xl"></i>
-                        </div>
-                        <p class="font-black text-sm tracking-[0.3em] uppercase text-zinc-500">Ready to Open</p>
-                    </div>
-
-                    <!-- Spinning state -->
-                    <div id="card-spinning" class="hidden w-full h-full rounded-[2.5rem] border-4 border-yellow-400 bg-shimmer flex items-center justify-center">
-                        <div class="text-center">
-                            <i class="fas fa-circle-notch text-yellow-400 text-5xl animate-spin mb-4"></i>
-                            <p class="text-yellow-400 font-black text-xs tracking-widest">抽選中...</p>
-                        </div>
-                    </div>
-
-                    <!-- Video Result -->
-                    <div id="card-result" class="hidden absolute inset-0 bg-black video-container">
-                        <video id="result-video" playsinline muted disablePictureInPicture disableremoteplayback preload="auto">
-                            <!-- Video Source -->
-                        </video>
-                        <div id="result-overlay" class="absolute inset-0 bg-black/70 flex flex-col items-center justify-center opacity-0 transition-opacity duration-500 pointer-events-none">
-                             <h3 id="result-text" class="text-4xl font-black italic tracking-tighter uppercase mb-2">RESULT</h3>
-                             <p class="text-white/60 text-[10px] font-bold tracking-widest uppercase">Tap to close</p>
-                        </div>
+            <div class="w-full max-w-[280px] aspect-[3/4] relative">
+                <div class="absolute -inset-4 bg-yellow-400/20 blur-2xl rounded-full"></div>
+                <div id="card-display" class="w-full h-full rounded-[2.5rem] bg-zinc-900 border-2 border-zinc-800 flex flex-col items-center justify-center overflow-hidden relative shadow-2xl">
+                    <img id="card-idle-thumb" src="" class="w-full h-full object-cover">
+                    <div id="no-thumb-placeholder" class="flex flex-col items-center text-zinc-700">
+                        <i class="fas fa-gift text-6xl mb-4"></i>
+                        <p class="font-black text-xs tracking-widest uppercase">No Preview</p>
                     </div>
                 </div>
             </div>
         </div>
     </main>
 
-    <!-- Footer -->
-    <footer id="controls" class="p-6 pb-12 bg-black border-t border-yellow-500/10 hidden z-30">
-        <div class="max-w-md mx-auto space-y-6">
-            <div class="flex justify-between items-end">
+    <!-- Controls -->
+    <footer id="controls" class="p-6 pb-12 bg-black border-t border-yellow-500/10 hidden">
+        <div class="max-w-md mx-auto">
+            <div class="flex justify-between items-end mb-6">
                 <div>
-                    <p class="text-[10px] font-black text-zinc-600 uppercase tracking-widest mb-1">残り口数</p>
-                    <p class="text-2xl font-black text-white"><span id="deck-count">0</span> <span class="text-sm text-zinc-500">/ <span id="total-count">0</span></span></p>
+                    <p class="text-[10px] font-black text-zinc-600 uppercase mb-1">残り口数</p>
+                    <p class="text-2xl font-black"><span id="deck-count">0</span> <span class="text-sm text-zinc-500">/ <span id="total-count">0</span></span></p>
                 </div>
                 <div id="deck-progress" class="flex gap-1"></div>
             </div>
 
-            <!-- Guest Action -->
-            <button id="btn-pull" class="hidden w-full bg-yellow-400 text-black rounded-2xl font-black text-xl py-5 flex items-center justify-center gap-3 active:scale-[0.98] transition-all shadow-xl shadow-yellow-400/20 disabled:opacity-20">
-                <i class="fas fa-bolt"></i> 開封する
+            <button id="btn-pull" class="w-full bg-yellow-400 text-black rounded-2xl font-black text-xl py-5 shadow-xl shadow-yellow-400/20 disabled:opacity-20 active:scale-95 transition-transform">
+                <i class="fas fa-bolt mr-2"></i>開封する
             </button>
-            
-            <!-- Host Reset -->
-            <button id="btn-reset" class="hidden w-full bg-red-600/10 text-red-500 border border-red-500/20 rounded-2xl py-3 font-bold text-xs active:bg-red-600/20">
-                このオリパを完売/削除する
-            </button>
+            <button id="btn-reset" class="hidden w-full bg-red-600/10 text-red-500 border border-red-500/20 rounded-2xl py-3 font-bold text-xs mt-4">削除する</button>
         </div>
     </footer>
 
-    <!-- Settings Overlay -->
-    <div id="settings-overlay" class="fixed inset-0 z-50 bg-black/95 backdrop-blur-sm hidden flex flex-col">
+    <!-- Settings -->
+    <div id="settings-overlay" class="fixed inset-0 z-50 bg-black/95 hidden flex flex-col">
         <div class="flex justify-between items-center p-6 border-b border-white/5">
-            <h2 class="text-xl font-black text-yellow-400 tracking-tighter italic uppercase">Network Settings</h2>
-            <button id="btn-close-settings" class="p-2 bg-zinc-900 rounded-full"><i class="fas fa-times text-xl"></i></button>
+            <h2 class="text-xl font-black text-yellow-400 italic">SETTINGS</h2>
+            <button id="btn-close-settings" class="p-2 bg-zinc-900 rounded-full"><i class="fas fa-times"></i></button>
         </div>
         <div class="p-6">
-            <label class="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em] mb-3 block">My Peer ID</label>
+            <label class="text-[10px] font-black text-zinc-600 uppercase mb-3 block">My Peer ID</label>
             <div class="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl">
                 <span id="my-id-display" class="text-xs font-mono text-yellow-400 break-all select-all">---</span>
             </div>
         </div>
     </div>
 
-    <div id="toast" class="toast fixed bottom-10 left-1/2 bg-yellow-400 text-black px-8 py-3 rounded-full font-black text-sm z-[100] shadow-2xl">リンクをコピーしました</div>
+    <div id="toast" class="toast fixed bottom-10 left-1/2 bg-yellow-400 text-black px-8 py-3 rounded-full font-black text-sm z-[100]">コピーしました</div>
 
     <script>
-        let peer, conn, myId = '', role = null;
-        let connections = []; // ホスト用：接続中の全ゲストを保持
-        let oripas = []; 
-        let currentOripaId = null;
+        let peer, conn, connections = [], oripas = [], role = null, currentOripaId = null;
 
         const els = {
             statusText: document.getElementById('status-text'),
@@ -235,122 +221,71 @@
             deckCount: document.getElementById('deck-count'),
             totalCount: document.getElementById('total-count'),
             deckProgress: document.getElementById('deck-progress'),
-            cardIdle: document.getElementById('card-idle'),
-            cardSpinning: document.getElementById('card-spinning'),
-            cardResult: document.getElementById('card-result'),
-            cardAura: document.getElementById('card-aura'),
-            resultVideo: document.getElementById('result-video'),
-            resultOverlay: document.getElementById('result-overlay'),
-            resultText: document.getElementById('result-text'),
             displayTitle: document.getElementById('display-title'),
-            displayThumb: document.getElementById('display-thumb'),
-            displayThumbContainer: document.getElementById('display-thumb-container'),
-            myIdDisplay: document.getElementById('my-id-display'),
+            cardIdleThumb: document.getElementById('card-idle-thumb'),
+            noThumb: document.getElementById('no-thumb-placeholder'),
+            fsLayer: document.getElementById('fullscreen-video-layer'),
+            mainVideo: document.getElementById('main-video'),
+            resultOverlay: document.getElementById('final-result-overlay'),
+            resultCardImg: document.getElementById('result-card-img'),
+            loseContainer: document.getElementById('lose-text-container'),
+            resultBadge: document.getElementById('result-badge'),
+            btnCloseResult: document.getElementById('btn-close-result'),
             inputImage: document.getElementById('input-image'),
-            imageLabel: document.getElementById('image-label')
+            inputWinImage: document.getElementById('input-win-image'),
+            myIdDisplay: document.getElementById('my-id-display')
         };
+
+        const thumbs = { main: '', win: '' };
 
         function initPeer() {
             peer = new Peer();
             peer.on('open', (id) => {
-                myId = id;
                 els.myIdDisplay.innerText = id;
                 document.getElementById('btn-share').classList.remove('hidden');
                 const hostId = new URLSearchParams(window.location.search).get('host');
                 if (hostId && hostId !== id) connectToHost(hostId);
-                else { 
-                    role = 'host'; 
-                    els.setupView.classList.remove('hidden'); 
-                    els.btnBackSetup.classList.remove('hidden');
-                }
+                else { role = 'host'; els.setupView.classList.remove('hidden'); els.btnBackSetup.classList.remove('hidden'); }
             });
-            peer.on('connection', (c) => { 
-                conn = c; 
-                role = 'host'; 
+            peer.on('connection', (c) => {
+                role = 'host';
                 connections.push(c);
-                setupConnection(c); 
-                // 接続直後は少し待ってからリストを送信（相手の受信準備を待つ）
+                setupConnection(c);
                 setTimeout(() => broadcast({ type: 'SYNC_LIST', oripas }), 1000);
             });
         }
 
         function connectToHost(id) {
-            role = 'guest'; 
+            role = 'guest';
             conn = peer.connect(id);
             setupConnection(conn);
-            els.statusText.innerText = 'ホストに接続中...';
         }
 
         function setupConnection(c) {
-            c.on('open', () => { 
+            c.on('open', () => {
                 els.statusDot.className = 'w-1.5 h-1.5 rounded-full bg-green-500';
-                if(role === 'guest') {
-                    els.statusText.innerText = '接続完了';
-                    // ゲスト側から同期をリクエスト
-                    sendData({ type: 'REQUEST_SYNC' });
-                }
+                els.statusText.innerText = 'Connected';
+                if(role === 'guest') sendData({ type: 'REQUEST_SYNC' });
             });
-            c.on('data', (data) => handleData(data));
-            c.on('close', () => {
-                if(role === 'host') {
-                    connections = connections.filter(con => con !== c);
+            c.on('data', (data) => {
+                switch(data.type) {
+                    case 'REQUEST_SYNC':
+                        if(role === 'host') broadcast({ type: 'SYNC_LIST', oripas });
+                        break;
+                    case 'SYNC_LIST':
+                        oripas = data.oripas;
+                        if (!currentOripaId) showListView(); else updateOripaInGame();
+                        break;
+                    case 'ORIPA_REMOVED':
+                        oripas = oripas.filter(o => o.id !== data.oripaId);
+                        if(currentOripaId === data.oripaId) { alert('このオリパは終了しました'); showListView(); } else renderOripaList();
+                        break;
                 }
-                els.statusDot.className = 'w-1.5 h-1.5 rounded-full bg-red-500';
             });
         }
 
-        function handleData(data) {
-            console.log("Received:", data.type, data);
-            switch(data.type) {
-                case 'REQUEST_SYNC':
-                    if(role === 'host') broadcast({ type: 'SYNC_LIST', oripas });
-                    break;
-                case 'SYNC_LIST':
-                    oripas = data.oripas;
-                    if (!currentOripaId) showListView();
-                    else updateOripaInGame();
-                    break;
-                case 'START_SPIN':
-                    // 他のゲストにもスピン開始を伝える（ブロードキャスト）
-                    if(role === 'host') broadcast(data);
-                    if (data.oripaId === currentOripaId) showSpinningUI();
-                    break;
-                case 'RESULT':
-                    if(role === 'host') {
-                        // ホスト側でデータを更新して全員に同期
-                        const o = oripas.find(item => item.id === data.oripaId);
-                        if(o) o.deck = data.newDeck;
-                        broadcast({ type: 'SYNC_LIST', oripas });
-                        broadcast(data); // 演出用
-                    }
-                    if (data.oripaId === currentOripaId) {
-                        prepareVideo(data.card.win);
-                        showResultUI(data.card, data.newDeck);
-                    }
-                    break;
-                case 'ORIPA_REMOVED':
-                    if(role === 'host') broadcast(data);
-                    oripas = oripas.filter(o => o.id !== data.oripaId);
-                    if (currentOripaId === data.oripaId) {
-                        alert('このオリパは終了しました');
-                        showListView();
-                    } else {
-                        renderOripaList();
-                    }
-                    break;
-            }
-        }
-
-        // 個別に送る用
         function sendData(d) { if (conn && conn.open) conn.send(d); }
-
-        // ホストから全員に送る用
-        function broadcast(d) {
-            if(role !== 'host') return;
-            connections.forEach(c => {
-                if(c.open) c.send(d);
-            });
-        }
+        function broadcast(d) { connections.forEach(c => { if(c.open) c.send(d); }); }
 
         function showListView() {
             currentOripaId = null;
@@ -364,21 +299,20 @@
         function renderOripaList() {
             els.oripaContainer.innerHTML = '';
             if (oripas.length === 0) {
-                els.oripaContainer.innerHTML = '<p class="text-zinc-600 text-center py-10 font-bold italic">公開中のオリパはありません</p>';
+                els.oripaContainer.innerHTML = '<p class="text-zinc-600 text-center py-10 italic">公開中のオリパはありません</p>';
                 return;
             }
             oripas.forEach(o => {
                 const item = document.createElement('div');
-                item.className = "bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex items-center gap-4 active:scale-[0.98] transition-transform cursor-pointer";
+                item.className = "bg-zinc-900 border border-zinc-800 p-4 rounded-2xl flex items-center gap-4 active:scale-95 transition-transform cursor-pointer";
                 item.innerHTML = `
                     <div class="w-16 h-16 bg-zinc-800 rounded-xl overflow-hidden flex-shrink-0">
-                        ${o.imageData ? `<img src="${o.imageData}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center text-zinc-600"><i class="fas fa-image"></i></div>`}
+                        ${o.imageData ? `<img src="${o.imageData}" class="w-full h-full object-cover">` : `<div class="w-full h-full flex items-center justify-center text-zinc-600"><i class="fas fa-gift"></i></div>`}
                     </div>
-                    <div class="flex-1 min-w-0">
+                    <div class="flex-1">
                         <h3 class="font-black text-white truncate">${o.title}</h3>
-                        <p class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mt-1">残り ${o.deck.length} / ${o.total} 口</p>
+                        <p class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">残り ${o.deck.length} / ${o.total}</p>
                     </div>
-                    <i class="fas fa-chevron-right text-yellow-400/50"></i>
                 `;
                 item.onclick = () => enterGame(o.id);
                 els.oripaContainer.appendChild(item);
@@ -389,22 +323,10 @@
             currentOripaId = id;
             updateOripaInGame();
             els.oripaListView.classList.add('hidden');
-            els.setupView.classList.add('hidden');
             els.gameView.classList.remove('hidden');
             els.controls.classList.remove('hidden');
-            
-            if (role === 'host') {
-                els.btnPull.classList.add('hidden');
-                els.btnReset.classList.remove('hidden');
-            } else {
-                els.btnPull.classList.remove('hidden');
-                els.btnReset.classList.add('hidden');
-            }
-            
-            els.cardIdle.classList.remove('hidden');
-            els.cardSpinning.classList.add('hidden');
-            els.cardResult.classList.add('hidden');
-            els.cardAura.className = "absolute -inset-6 rounded-[3rem] blur-3xl opacity-0 transition-all duration-1000";
+            els.btnPull.classList.toggle('hidden', role === 'host');
+            els.btnReset.classList.toggle('hidden', role !== 'host');
         }
 
         function updateOripaInGame() {
@@ -412,13 +334,16 @@
             if (!o) return;
             els.displayTitle.innerText = o.title;
             if (o.imageData) {
-                els.displayThumb.src = o.imageData;
-                els.displayThumbContainer.classList.remove('hidden');
+                els.cardIdleThumb.src = o.imageData;
+                els.cardIdleThumb.classList.remove('hidden');
+                els.noThumb.classList.add('hidden');
             } else {
-                els.displayThumbContainer.classList.add('hidden');
+                els.cardIdleThumb.classList.add('hidden');
+                els.noThumb.classList.remove('hidden');
             }
             els.deckCount.innerText = o.deck.length;
             els.totalCount.innerText = o.total;
+            els.btnPull.disabled = o.deck.length === 0;
             
             els.deckProgress.innerHTML = '';
             const maxDots = 5;
@@ -428,68 +353,93 @@
                 dot.className = `w-8 h-1 rounded-full ${i < filled ? 'bg-yellow-400' : 'bg-zinc-800'}`;
                 els.deckProgress.appendChild(dot);
             }
-            els.btnPull.disabled = o.deck.length === 0;
         }
 
-        function showSpinningUI() {
-            els.cardIdle.classList.add('hidden');
-            els.cardResult.classList.add('hidden');
-            els.cardSpinning.classList.remove('hidden');
-            els.resultOverlay.classList.add('opacity-0');
-        }
+        // --- 開封演出ロジック ---
 
-        function prepareVideo(isWin) {
-            els.resultVideo.src = isWin ? '1.mp4' : '2.mp4';
-            els.resultVideo.load();
-        }
-
-        function showResultUI(card, newDeck) {
+        els.btnPull.onclick = () => {
             const o = oripas.find(item => item.id === currentOripaId);
-            if (o) o.deck = newDeck;
-            updateOripaInGame();
+            if (!o || o.deck.length === 0) return;
 
-            els.cardSpinning.classList.add('hidden');
-            els.cardResult.classList.remove('hidden');
+            // 1. 操作ロック（連打防止）
+            els.btnPull.disabled = true;
+
+            // 2. カードを確定
+            const card = o.deck.pop();
             
-            if (card.win) {
-                els.cardAura.className = "absolute -inset-6 rounded-[3rem] blur-3xl transition-all duration-1000 bg-yellow-400 opacity-60 animate-pulse";
-                els.resultText.innerText = "WIN!!"; els.resultText.className = "text-4xl font-black italic tracking-tighter uppercase mb-2 text-yellow-400";
-            } else {
-                els.cardAura.className = "absolute -inset-6 rounded-[3rem] blur-3xl transition-all duration-1000 bg-red-600 opacity-20";
-                els.resultText.innerText = "LOSE"; els.resultText.className = "text-4xl font-black italic tracking-tighter uppercase mb-2 text-zinc-400";
+            // 3. 動画準備
+            els.mainVideo.src = card.win ? '1.mp4' : '2.mp4';
+            els.mainVideo.volume = 1.0; // 音量を最大に
+            els.mainVideo.muted = false; // 音が出るように設定
+            
+            // 4. 全画面表示レイヤーを表示
+            els.fsLayer.style.display = 'flex';
+            els.resultOverlay.classList.add('hidden');
+            
+            // 動画再生（ブラウザ制限回避のため、play()の結果をハンドリング）
+            const playPromise = els.mainVideo.play();
+            if (playPromise !== undefined) {
+                playPromise.catch(error => {
+                    console.log("Playback interaction required: ", error);
+                    // 失敗した場合は、ミュートにしてでも再生（最低限映像は出す）
+                    els.mainVideo.muted = true;
+                    els.mainVideo.play();
+                });
             }
 
-            els.resultVideo.play().catch(e => {
-                console.log("Play failed", e);
-                els.resultOverlay.classList.remove('opacity-0');
-            });
-
-            els.resultVideo.onended = () => {
-                els.resultOverlay.classList.remove('opacity-0');
+            els.mainVideo.onended = () => {
+                // 5. 動画終了後の結果表示
+                els.resultOverlay.classList.remove('hidden');
+                if (card.win) {
+                    els.resultBadge.innerText = "WINNER!!";
+                    els.resultBadge.className = "text-5xl font-black italic shimmer-text mb-8";
+                    if (o.winImageData) {
+                        els.resultCardImg.src = o.winImageData;
+                        els.resultCardImg.classList.remove('hidden');
+                        els.loseContainer.classList.add('hidden');
+                    }
+                } else {
+                    els.resultBadge.innerText = "LOSE...";
+                    els.resultBadge.className = "text-5xl font-black italic text-zinc-600 mb-8";
+                    els.resultCardImg.classList.add('hidden');
+                    els.loseContainer.classList.remove('hidden');
+                }
+                
+                // 6. データの同期
+                if (role === 'guest') {
+                    sendData({ type: 'RESULT', oripaId: currentOripaId, newDeck: o.deck });
+                } else {
+                    broadcast({ type: 'SYNC_LIST', oripas });
+                }
+                updateOripaInGame();
             };
-        }
+        };
 
-        // --- Interaction ---
+        els.btnCloseResult.onclick = () => {
+            els.fsLayer.style.display = 'none';
+            els.mainVideo.pause();
+            els.mainVideo.currentTime = 0;
+            const o = oripas.find(o => o.id === currentOripaId);
+            els.btnPull.disabled = (!o || o.deck.length === 0);
+        };
+
+        // --- ホスト操作 ---
 
         document.getElementById('btn-add-oripa').onclick = () => {
             const win = parseInt(document.getElementById('input-win-count').value) || 0;
             const lose = parseInt(document.getElementById('input-lose-count').value) || 0;
-            const title = document.getElementById('input-title').value || '無題のオリパ';
-            
             if (win + lose === 0) return alert('1口以上作成してください');
 
             let newDeck = [];
             for(let i=0; i<win; i++) newDeck.push({ win: true });
             for(let i=0; i<lose; i++) newDeck.push({ win: false });
-            for (let i = newDeck.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [newDeck[i], newDeck[j]] = [newDeck[j], newDeck[i]];
-            }
+            newDeck.sort(() => Math.random() - 0.5);
 
             const newOripa = {
                 id: crypto.randomUUID(),
-                title: title,
-                imageData: document.getElementById('image-label').dataset.src || '',
+                title: document.getElementById('input-title').value || '無題のオリパ',
+                imageData: thumbs.main,
+                winImageData: thumbs.win,
                 deck: newDeck,
                 total: win + lose
             };
@@ -498,73 +448,52 @@
             broadcast({ type: 'SYNC_LIST', oripas });
             showListView();
             
+            // 入力リセット
             document.getElementById('input-title').value = '';
-            els.imageLabel.innerText = '画像を選択';
-            delete els.imageLabel.dataset.src;
-        };
-
-        els.btnPull.onclick = () => {
-            if (role !== 'guest' || !currentOripaId) return;
-            const o = oripas.find(item => item.id === currentOripaId);
-            if (!o || o.deck.length === 0) return;
-
-            showSpinningUI();
-            sendData({ type: 'START_SPIN', oripaId: currentOripaId });
-
-            const card = o.deck.pop();
-            prepareVideo(card.win);
-
-            setTimeout(() => {
-                showResultUI(card, o.deck);
-                // ホストに結果を送る（ホストが全員にブロードキャストする）
-                sendData({ type: 'RESULT', oripaId: currentOripaId, card, newDeck: o.deck });
-            }, 500);
+            thumbs.main = '';
+            thumbs.win = '';
         };
 
         els.btnReset.onclick = () => {
-            if (confirm('このオリパを削除しますか？')) {
-                const idToRemove = currentOripaId;
-                oripas = oripas.filter(o => o.id !== idToRemove);
-                broadcast({ type: 'ORIPA_REMOVED', oripaId: idToRemove });
+            if (confirm('削除しますか？')) {
+                const id = currentOripaId;
+                oripas = oripas.filter(o => o.id !== id);
+                broadcast({ type: 'ORIPA_REMOVED', oripaId: id });
                 showListView();
             }
         };
 
-        els.btnLeaveGame.onclick = () => showListView();
-        els.btnShowList.onclick = () => showListView();
-        els.btnBackSetup.onclick = () => {
-            els.oripaListView.classList.add('hidden');
-            els.setupView.classList.remove('hidden');
-        };
+        // --- Helpers ---
 
-        els.inputImage.onchange = (e) => {
+        els.inputImage.onchange = (e) => handleFile(e, 'main');
+        els.inputWinImage.onchange = (e) => handleFile(e, 'win');
+        function handleFile(e, key) {
             const file = e.target.files[0];
             if (!file) return;
             const reader = new FileReader();
-            reader.onload = (ev) => {
-                els.imageLabel.innerText = '画像を選択済み';
-                els.imageLabel.dataset.src = ev.target.result;
-            };
+            reader.onload = (ev) => thumbs[key] = ev.target.result;
             reader.readAsDataURL(file);
-        };
+        }
 
+        els.btnLeaveGame.onclick = () => showListView();
+        els.btnShowList.onclick = () => showListView();
+        els.btnBackSetup.onclick = () => { els.oripaListView.classList.add('hidden'); els.setupView.classList.remove('hidden'); };
+        
         document.getElementById('btn-share').onclick = () => {
-            const url = `${window.location.origin}${window.location.pathname}?host=${myId}`;
-            const t = document.createElement("textarea"); t.value = url; document.body.appendChild(t); t.select(); document.execCommand('copy'); document.body.removeChild(t);
-            const toast = document.getElementById('toast'); toast.classList.add('show');
+            const url = `${window.location.origin}${window.location.pathname}?host=${peer.id}`;
+            const t = document.createElement("textarea"); 
+            t.value = url; 
+            document.body.appendChild(t); 
+            t.select(); 
+            document.execCommand('copy'); 
+            document.body.removeChild(t);
+            const toast = document.getElementById('toast'); 
+            toast.classList.add('show');
             setTimeout(() => toast.classList.remove('show'), 3000);
         };
-
+        
         document.getElementById('btn-settings').onclick = () => document.getElementById('settings-overlay').classList.remove('hidden');
         document.getElementById('btn-close-settings').onclick = () => document.getElementById('settings-overlay').classList.add('hidden');
-
-        els.cardResult.onclick = () => {
-            if (els.resultVideo.paused || els.resultVideo.ended) {
-                els.cardResult.classList.add('hidden');
-                els.cardIdle.classList.remove('hidden');
-                els.cardAura.className = "absolute -inset-6 rounded-[3rem] blur-3xl opacity-0 transition-all duration-1000";
-            }
-        };
 
         initPeer();
     </script>
