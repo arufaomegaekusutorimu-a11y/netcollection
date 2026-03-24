@@ -1,250 +1,418 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageSquare, User, Shield, Sword, Heart, Send, RefreshCw, Zap } from 'lucide-react';
+import { 
+  Users, 
+  Play, 
+  RotateCcw, 
+  Share2,
+  Trophy,
+  ShieldCheck,
+  Zap,
+  X,
+  Copy,
+  Info,
+  ChevronDown,
+  Settings 
+} from 'lucide-react';
+import { Peer } from 'peerjs';
+
+// --- Constants & Types ---
+const CARDS_POOL = [
+  { id: 's1', name: 'Ultra Rare Dragon', rank: 'SR', color: 'from-yellow-400 via-orange-500 to-red-600', value: 10000 },
+  { id: 's2', name: 'Golden Knight', rank: 'SR', color: 'from-yellow-200 via-yellow-400 to-yellow-700', value: 8000 },
+  { id: 'r1', name: 'Thunder Mage', rank: 'R', color: 'from-blue-400 via-indigo-500 to-purple-600', value: 2000 },
+  { id: 'r2', name: 'Flame Warrior', rank: 'R', color: 'from-orange-400 via-red-500 to-red-700', value: 1500 },
+  { id: 'n1', name: 'Forest Wolf', rank: 'N', color: 'from-green-400 to-emerald-700', value: 300 },
+  { id: 'n2', name: 'Water Spirit', rank: 'N', color: 'from-cyan-400 to-blue-500', value: 300 },
+];
 
 const App = () => {
-  // --- 初期設定と定数 ---
-  const MAX_AP = 10;
-  const AP_RECOVERY_TIME = 60000; // 1分で1回復
-  const STORAGE_KEY = 'chat_game_data';
+  // --- State ---
+  const [peerId, setPeerId] = useState('');
+  const [targetId, setTargetId] = useState('');
+  const [role, setRole] = useState(null); 
+  const [connection, setConnection] = useState(null);
+  const [status, setStatus] = useState('未接続');
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  
+  // Game State
+  const [deck, setDeck] = useState([]);
+  const [pulledCard, setPulledCard] = useState(null);
+  const [isSpinning, setIsSpinning] = useState(false);
+  const [logs, setLogs] = useState([]);
 
-  // --- 状態管理 ---
-  const [player, setPlayer] = useState({
-    name: '冒険者',
-    level: 1,
-    exp: 0,
-    hp: 100,
-    maxHp: 100,
-    ap: MAX_AP,
-    lastApUpdate: Date.now()
-  });
+  const peerRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
 
-  const [messages, setMessages] = useState([]);
-  const [inputText, setInputText] = useState('');
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const scrollRef = useRef(null);
-
-  // --- 初期データの読み込み ---
-  useEffect(() => {
-    const savedData = localStorage.getItem(STORAGE_KEY);
-    if (savedData) {
-      const parsed = JSON.parse(savedData);
-      setPlayer(parsed.player);
-      setMessages(parsed.messages);
-    } else {
-      // 初回メッセージ
-      const initialMsg = {
-        id: Date.now(),
-        type: 'system',
-        user: 'システム',
-        text: 'チャットゲームの世界へようこそ！発言や行動をしてレベルを上げましょう。',
-        time: new Date().toLocaleTimeString()
-      };
-      setMessages([initialMsg]);
-    }
-  }, []);
-
-  // --- データの自動保存 ---
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ player, messages }));
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [player, messages]);
-
-  // --- APの自然回復ロジック ---
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setPlayer(prev => {
-        if (prev.ap >= MAX_AP) return prev;
-        const now = Date.now();
-        const elapsed = now - prev.lastApUpdate;
-        if (elapsed >= AP_RECOVERY_TIME) {
-          return {
-            ...prev,
-            ap: Math.min(MAX_AP, prev.ap + 1),
-            lastApUpdate: now
-          };
-        }
-        return prev;
-      });
-    }, 5000); // 5秒ごとにチェック
-    return () => clearInterval(timer);
-  }, []);
-
-  // --- アクション処理 ---
-  const addMessage = (user, text, type = 'chat') => {
-    const newMsg = {
-      id: Date.now(),
-      type,
-      user,
-      text,
-      time: new Date().toLocaleTimeString()
-    };
-    setMessages(prev => [...prev.slice(-49), newMsg]); // 直近50件を保持
-  };
-
-  const handleSend = (e) => {
-    e.preventDefault();
-    if (!inputText.trim()) return;
-
-    if (player.ap <= 0) {
-      addMessage('システム', 'APが足りません！回復を待ちましょう。', 'system');
-      return;
+  // --- P2P Logic ---
+  const initializePeer = () => {
+    // すでに存在する場合はクリーンアップ
+    if (peerRef.current) {
+      peerRef.current.destroy();
     }
 
-    addMessage(player.name, inputText);
+    const newPeer = new Peer();
     
-    // 経験値獲得とAP消費
-    setPlayer(prev => {
-      const newExp = prev.exp + 5;
-      const nextLevelThreshold = prev.level * 20;
-      if (newExp >= nextLevelThreshold) {
-        addMessage('システム', `レベルアップ！ Lv.${prev.level + 1} になりました！`, 'system');
-        return {
-          ...prev,
-          level: prev.level + 1,
-          exp: 0,
-          ap: prev.ap - 1,
-          maxHp: prev.maxHp + 10,
-          hp: prev.maxHp + 10
-        };
-      }
-      return { ...prev, exp: newExp, ap: prev.ap - 1 };
+    newPeer.on('open', (id) => {
+      setPeerId(id);
+      setStatus('待機中');
     });
 
-    setInputText('');
+    newPeer.on('connection', (conn) => {
+      setRole('host');
+      setConnection(conn);
+      setStatus('接続中 (Host)');
+      setupConnection(conn);
+    });
+
+    newPeer.on('error', (err) => {
+      console.error('Peer error:', err.type, err);
+      
+      // サーバー接続ロスト時の再試行
+      if (err.type === 'lost-connection' || err.type === 'socket-closed') {
+        setStatus('再接続中...');
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          initializePeer();
+        }, 3000);
+      } else {
+        setStatus(`エラー: ${err.type}`);
+      }
+    });
+
+    newPeer.on('disconnected', () => {
+      setStatus('サーバー切断 (再接続中)');
+      newPeer.reconnect();
+    });
+
+    peerRef.current = newPeer;
   };
 
-  const handleExplore = () => {
-    if (player.ap < 2) {
-      addMessage('システム', '探索にはAPが2必要です。', 'system');
+  useEffect(() => {
+    initializePeer();
+    return () => {
+      clearTimeout(reconnectTimeoutRef.current);
+      if (peerRef.current) peerRef.current.destroy();
+    };
+  }, []);
+
+  const setupConnection = (conn) => {
+    conn.on('data', (data) => handleIncomingData(data));
+    conn.on('close', () => {
+      setStatus('通信相手が切断しました');
+      setConnection(null);
+    });
+    conn.on('error', (err) => {
+      console.error('Connection error:', err);
+      setStatus('通信エラー');
+    });
+  };
+
+  const handleIncomingData = (data) => {
+    if (!data) return;
+    switch (data.type) {
+      case 'SYNC_STATE':
+        setDeck(data.deck || []);
+        setPulledCard(data.pulledCard);
+        break;
+      case 'START_SPIN':
+        setIsSpinning(true);
+        setPulledCard(null);
+        break;
+      case 'RESULT':
+        setIsSpinning(false);
+        setPulledCard(data.card);
+        setDeck(data.newDeck || []);
+        setLogs(prev => [`${data.card.name} を獲得！`, ...prev.slice(0, 4)]);
+        break;
+      default:
+        break;
+    }
+  };
+
+  const connectToPeer = () => {
+    if (!targetId || !peerRef.current) return;
+    if (peerRef.current.destroyed) {
+      initializePeer();
       return;
     }
 
-    setIsRefreshing(true);
+    try {
+      const conn = peerRef.current.connect(targetId, {
+        reliable: true
+      });
+      setRole('guest');
+      setConnection(conn);
+      setStatus('接続中 (Guest)');
+      setupConnection(conn);
+      setIsMenuOpen(false);
+    } catch (err) {
+      console.error('Failed to connect:', err);
+      setStatus('接続失敗');
+    }
+  };
+
+  const sendData = (data) => {
+    if (connection && connection.open) {
+      connection.send(data);
+    }
+  };
+
+  const createDeck = () => {
+    if (role !== 'host') return;
+    const newDeck = [...Array(10)].map(() => CARDS_POOL[Math.floor(Math.random() * CARDS_POOL.length)]);
+    setDeck(newDeck);
+    setPulledCard(null);
+    sendData({ type: 'SYNC_STATE', deck: newDeck, pulledCard: null });
+  };
+
+  const pullCard = () => {
+    if (role !== 'host' || deck.length === 0 || isSpinning) return;
+    setIsSpinning(true);
+    sendData({ type: 'START_SPIN' });
+
     setTimeout(() => {
-      const results = [
-        "薬草を見つけた！HPが少し回復した。",
-        "モンスターに遭遇したが、うまく逃げ切った。",
-        "古い金貨を拾った！",
-        "何も見つからなかった..."
-      ];
-      const result = results[Math.floor(Math.random() * results.length)];
-      addMessage(player.name, `【探索】 ${result}`, 'action');
-      
-      setPlayer(prev => ({
-        ...prev,
-        ap: prev.ap - 2,
-        exp: prev.exp + 10
-      }));
-      setIsRefreshing(false);
-    }, 800);
+      const newDeck = [...deck];
+      const card = newDeck.pop();
+      setPulledCard(card);
+      setDeck(newDeck);
+      setIsSpinning(false);
+      sendData({ type: 'RESULT', card, newDeck });
+      setLogs(prev => [`${card.name} を獲得！`, ...prev.slice(0, 4)]);
+    }, 1800);
+  };
+
+  const copyId = () => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(peerId);
+      } else {
+        const textArea = document.createElement("textarea");
+        textArea.value = peerId;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
+    } catch (err) {
+      console.error('Copy failed', err);
+    }
   };
 
   return (
-    <div className="flex flex-col h-screen bg-slate-900 text-slate-100 font-sans">
-      {/* ヘッダー: ステータス */}
-      <header className="bg-slate-800 p-4 border-b border-slate-700 shadow-lg">
-        <div className="max-w-4xl mx-auto flex justify-between items-center">
-          <div className="flex items-center gap-4">
-            <div className="bg-indigo-600 p-2 rounded-full">
-              <User size={24} />
-            </div>
-            <div>
-              <h1 className="font-bold text-lg">{player.name} <span className="text-sm font-normal text-slate-400">Lv.{player.level}</span></h1>
-              <div className="w-32 h-2 bg-slate-700 rounded-full mt-1 overflow-hidden">
-                <div 
-                  className="h-full bg-yellow-500 transition-all duration-500" 
-                  style={{ width: `${(player.exp / (player.level * 20)) * 100}%` }}
-                />
-              </div>
-            </div>
-          </div>
-          
-          <div className="flex gap-6 text-sm">
-            <div className="flex flex-col items-center">
-              <div className="flex items-center gap-1 text-red-400">
-                <Heart size={16} /> <span>{player.hp}/{player.maxHp}</span>
-              </div>
-              <span className="text-[10px] uppercase text-slate-500">Health</span>
-            </div>
-            <div className="flex flex-col items-center">
-              <div className="flex items-center gap-1 text-cyan-400">
-                <Zap size={16} /> <span>{player.ap}/{MAX_AP}</span>
-              </div>
-              <span className="text-[10px] uppercase text-slate-500">Stamina</span>
-            </div>
-          </div>
+    <div className="fixed inset-0 bg-black text-white font-sans overflow-hidden flex flex-col">
+      
+      {/* Header */}
+      <header className="px-6 py-4 flex justify-between items-center z-20 bg-gradient-to-b from-black to-transparent">
+        <div className="flex items-center gap-2">
+          <Zap className="w-6 h-6 text-indigo-500 fill-current" />
+          <h1 className="text-xl font-black italic tracking-tighter">ORIPA.LIVE</h1>
         </div>
+        <button 
+          onClick={() => setIsMenuOpen(true)}
+          className="bg-white/10 backdrop-blur-md p-2 rounded-full border border-white/10 active:scale-90 transition-transform"
+        >
+          <Settings className="w-5 h-5" />
+        </button>
       </header>
 
-      {/* メイン: チャットエリア */}
-      <main className="flex-1 overflow-hidden max-w-4xl mx-auto w-full flex flex-col p-4">
-        <div 
-          ref={scrollRef}
-          className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-slate-700"
-        >
-          {messages.map((msg) => (
-            <div 
-              key={msg.id} 
-              className={`p-3 rounded-lg max-w-[90%] animate-in fade-in slide-in-from-bottom-2 duration-300 ${
-                msg.type === 'system' ? 'bg-slate-800 border border-slate-700 mx-auto text-center text-sm text-indigo-300' :
-                msg.type === 'action' ? 'bg-emerald-900/30 border border-emerald-800/50 text-emerald-100 italic' :
-                'bg-slate-800 border border-slate-700'
-              }`}
-            >
-              <div className="flex justify-between items-baseline mb-1">
-                <span className={`font-bold text-xs ${msg.type === 'system' ? 'text-indigo-400' : 'text-slate-400'}`}>
-                  {msg.user}
-                </span>
-                <span className="text-[10px] text-slate-500">{msg.time}</span>
-              </div>
-              <p className="text-sm leading-relaxed">{msg.text}</p>
-            </div>
-          ))}
+      {/* Main Display Area */}
+      <main className="flex-1 relative flex flex-col items-center justify-center px-4 pt-10 pb-32">
+        
+        {/* Background Aura */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <div className={`absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[150%] aspect-square rounded-full transition-all duration-1000 blur-[100px] opacity-20 ${pulledCard ? 'bg-indigo-500' : 'bg-slate-800'}`} />
         </div>
+
+        {/* Status indicator */}
+        <div className="absolute top-20 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-white/5 border border-white/10 px-4 py-1.5 rounded-full backdrop-blur-xl whitespace-nowrap">
+           <div className={`w-1.5 h-1.5 rounded-full ${status.includes('接続中') ? 'bg-green-500' : status.includes('再接続') ? 'bg-yellow-500 animate-pulse' : 'bg-red-500'}`} />
+           <span className="text-[10px] font-bold tracking-widest uppercase opacity-70">{status}</span>
+        </div>
+
+        {/* Card Animation Container */}
+        <div className="w-full max-w-[320px] aspect-[3/4] relative z-10">
+          {isSpinning ? (
+            <div className="w-full h-full flex flex-col items-center justify-center">
+              <div className="w-full h-full rounded-[2.5rem] bg-gradient-to-br from-indigo-600/20 to-purple-600/20 border-4 border-indigo-500 animate-pulse shadow-[0_0_50px_rgba(99,102,241,0.3)] overflow-hidden relative">
+                <div className="absolute inset-0 bg-[linear-gradient(45deg,transparent_25%,rgba(255,255,255,0.1)_50%,transparent_75%)] bg-[length:250%_250%] animate-shimmer" />
+                <div className="h-full w-full flex items-center justify-center">
+                   <div className="w-16 h-16 border-t-4 border-white rounded-full animate-spin" />
+                </div>
+              </div>
+              <p className="mt-6 text-indigo-400 font-black tracking-[0.3em] text-sm animate-bounce">OPENING...</p>
+            </div>
+          ) : pulledCard ? (
+            <div className="w-full h-full animate-in zoom-in duration-500">
+               <div className={`w-full h-full rounded-[2.5rem] bg-gradient-to-br ${pulledCard.color} p-1.5 shadow-[0_30px_60px_rgba(0,0,0,0.5)]`}>
+                  <div className="w-full h-full bg-slate-900 rounded-[2.2rem] overflow-hidden flex flex-col border border-white/10">
+                    <div className={`h-[55%] bg-gradient-to-br ${pulledCard.color} flex items-center justify-center relative`}>
+                      <Trophy className="w-24 h-24 text-white/40" />
+                      <div className="absolute top-6 right-6 bg-black/60 backdrop-blur-md px-4 py-1 rounded-full border border-white/20">
+                        <span className="text-sm font-black text-white">{pulledCard.rank}</span>
+                      </div>
+                    </div>
+                    <div className="p-8 flex-1 flex flex-col justify-between">
+                      <div>
+                        <h3 className="text-2xl font-black leading-tight mb-2">{pulledCard.name}</h3>
+                        <p className="text-indigo-400 font-mono font-bold">¥{pulledCard.value.toLocaleString()}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                         <div className="p-1.5 bg-indigo-500/10 rounded-lg">
+                           <ShieldCheck className="w-4 h-4 text-indigo-400" />
+                         </div>
+                         <span className="text-[10px] font-bold text-slate-500 tracking-wider uppercase">Authentic Item</span>
+                      </div>
+                    </div>
+                  </div>
+               </div>
+            </div>
+          ) : (
+            <div className="w-full h-full rounded-[2.5rem] bg-slate-900 border-2 border-dashed border-slate-800 flex flex-col items-center justify-center text-slate-700">
+              <div className="w-20 h-20 bg-slate-800/50 rounded-full flex items-center justify-center mb-4">
+                <Play className="w-10 h-10 ml-1" />
+              </div>
+              <p className="font-bold text-sm tracking-widest uppercase">Start Pulling</p>
+            </div>
+          )}
+        </div>
+
+        {/* Mini Logs */}
+        {logs.length > 0 && (
+          <div className="mt-12 w-full max-w-[300px] flex flex-col gap-2 pointer-events-none">
+            {logs.map((log, i) => (
+              <div key={i} className="bg-white/5 border border-white/5 px-4 py-2 rounded-xl text-[10px] font-bold text-slate-400 animate-in slide-in-from-bottom-2 fade-in">
+                {String(log)}
+              </div>
+            ))}
+          </div>
+        )}
       </main>
 
-      {/* フッター: 操作パネル */}
-      <footer className="bg-slate-800 p-4 border-t border-slate-700">
-        <div className="max-w-4xl mx-auto">
-          <div className="flex gap-2 mb-4">
-            <button 
-              onClick={handleExplore}
-              disabled={isRefreshing || player.ap < 2}
-              className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 py-2 rounded-md font-bold transition-colors shadow-sm"
-            >
-              {isRefreshing ? <RefreshCw className="animate-spin" size={18} /> : <Sword size={18} />}
-              探索する (AP:2)
-            </button>
-            <button 
-              className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-md transition-colors"
-              onClick={() => addMessage('システム', 'ここは安全なキャンプです。', 'system')}
-            >
-              <Shield size={18} />
-            </button>
+      {/* Bottom Action Area */}
+      <footer className="fixed bottom-0 left-0 right-0 p-6 pb-10 bg-gradient-to-t from-black via-black/90 to-transparent z-10">
+        <div className="max-w-md mx-auto flex flex-col gap-4">
+          
+          <div className="flex items-center justify-between px-2 mb-2">
+            <div className="flex items-center gap-2">
+              <div className="p-1 bg-white/10 rounded">
+                <ChevronDown className="w-3 h-3 text-slate-400" />
+              </div>
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Deck Remainder</span>
+            </div>
+            <span className="text-sm font-black text-indigo-400">{deck.length} / 10</span>
           </div>
 
-          <form onSubmit={handleSend} className="flex gap-2">
-            <input
-              type="text"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="メッセージを入力..."
-              className="flex-1 bg-slate-900 border border-slate-700 rounded-md px-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-            />
-            <button 
-              type="submit"
-              className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-md transition-colors shadow-sm flex items-center justify-center"
-            >
-              <Send size={18} />
-            </button>
-          </form>
-          <p className="text-[10px] text-slate-500 mt-2 text-center">
-            ※スタミナは1分ごとに回復します。発言すると経験値が溜まります。
-          </p>
+          <div className="grid grid-cols-5 gap-1.5 h-1.5 mb-4">
+            {[...Array(10)].map((_, i) => (
+              <div key={i} className={`rounded-full transition-all duration-500 ${i < deck.length ? 'bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]' : 'bg-slate-800'}`} />
+            ))}
+          </div>
+
+          {role === 'host' ? (
+            <div className="flex gap-3">
+              <button 
+                onClick={createDeck}
+                className="w-16 h-16 bg-slate-800 rounded-2xl flex items-center justify-center active:scale-90 transition-transform border border-slate-700"
+              >
+                <RotateCcw className="w-6 h-6 text-slate-400" />
+              </button>
+              <button 
+                disabled={deck.length === 0 || isSpinning}
+                onClick={pullCard}
+                className="flex-1 bg-white text-black rounded-2xl font-black text-xl flex items-center justify-center gap-3 shadow-[0_10px_30px_rgba(255,255,255,0.2)] active:scale-[0.98] disabled:opacity-30 disabled:active:scale-100 transition-all overflow-hidden relative"
+              >
+                <div className="absolute inset-0 bg-indigo-500/10 animate-pulse" />
+                <Play className="fill-current w-5 h-5" />
+                OPEN PACK
+              </button>
+            </div>
+          ) : (
+            <div className="w-full bg-slate-900 border border-slate-800 rounded-2xl py-4 px-6 flex items-center justify-center gap-3 text-slate-400 italic text-sm">
+              <Info className="w-4 h-4" />
+              {role === 'guest' ? 'Waiting for host...' : 'Connect to a host first'}
+            </div>
+          )}
         </div>
       </footer>
+
+      {/* Settings Modal */}
+      {isMenuOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xl animate-in fade-in duration-300 flex flex-col">
+          <div className="flex justify-between items-center p-6 border-b border-white/10">
+            <h2 className="text-xl font-black">SETTINGS</h2>
+            <button onClick={() => setIsMenuOpen(false)} className="p-2 bg-white/10 rounded-full">
+              <X className="w-6 h-6" />
+            </button>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto p-6 space-y-8">
+            <section>
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3 block">My Identity</label>
+              <div className="bg-white/5 border border-white/10 p-4 rounded-2xl flex flex-col gap-4">
+                <div>
+                  <p className="text-xs text-slate-400 mb-1">Your Peer ID</p>
+                  <p className="font-mono text-indigo-400 break-all bg-black/40 p-3 rounded-lg border border-white/5 select-all">{peerId || 'Generating...'}</p>
+                </div>
+                <button 
+                  onClick={copyId}
+                  className="w-full bg-indigo-600 py-3 rounded-xl font-bold flex items-center justify-center gap-2 active:scale-95 transition-transform"
+                >
+                  <Copy className="w-4 h-4" />
+                  Copy ID
+                </button>
+              </div>
+            </section>
+
+            <section>
+              <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] mb-3 block">Connect to Host</label>
+              <div className="space-y-3">
+                <input 
+                  type="text" 
+                  placeholder="Enter Host Peer ID"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm text-white"
+                  value={targetId}
+                  onChange={(e) => setTargetId(e.target.value)}
+                />
+                <button 
+                  onClick={connectToPeer}
+                  className="w-full bg-white text-black py-4 rounded-xl font-black active:scale-95 transition-transform shadow-lg shadow-white/5"
+                >
+                  ESTABLISH CONNECTION
+                </button>
+              </div>
+            </section>
+
+            <section className="bg-indigo-500/10 border border-indigo-500/20 p-4 rounded-2xl">
+              <div className="flex items-center gap-3 mb-2">
+                <Users className="w-5 h-5 text-indigo-400" />
+                <h3 className="font-bold text-sm">How it works</h3>
+              </div>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                P2P通信を使用し、ホストの操作があなたの画面にリアルタイムで同期されます。サーバーを介さないため、プライバシーが守られ、低遅延な体験を提供します。
+              </p>
+            </section>
+          </div>
+          
+          <div className="p-6 border-t border-white/10 text-center">
+            <p className="text-[10px] font-bold text-slate-600 tracking-widest uppercase">v1.0.2 Connection Resilience</p>
+          </div>
+        </div>
+      )}
+
+      {/* Global CSS for Mobile Effects */}
+      <style dangerouslySetInnerHTML={{ __html: `
+        @keyframes shimmer {
+          0% { background-position: -200% -200%; }
+          100% { background-position: 200% 200%; }
+        }
+        .animate-shimmer {
+          animation: shimmer 3s infinite linear;
+        }
+        body {
+          overscroll-behavior-y: contain;
+          touch-action: manipulation;
+        }
+      `}} />
     </div>
   );
 };
